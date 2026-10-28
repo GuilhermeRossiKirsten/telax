@@ -8,7 +8,7 @@ intermedeia a sinalização, a presença e o chat.
 - Lista de participantes com estado de conexão (Conectando / Conectado / Reconectando / Falhou)
 - **Reiniciar conexões**: renegocia todos os pares sem ninguém sair da sala
 - Reconexão automática de pares e do canal de sinalização
-- Até 8 participantes por sala; interface escura com detalhes roxos, responsiva
+- Até 8 participantes por sala; interface escura (paleta e fontes do rossik.dev.br: fundo oliva, destaque lima, Roboto/Oswald), responsiva; câmera e microfone entram mutados
 
 ## Como rodar
 

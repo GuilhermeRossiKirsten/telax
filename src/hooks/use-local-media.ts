@@ -14,7 +14,7 @@ const ATTEMPTS: MediaStreamConstraints[] = [{ audio: true, video: true }, { audi
 const stopStream = (s: MediaStream | null) => s?.getTracks().forEach((t) => t.stop());
 
 /**
- * Captura câmera+microfone uma vez e tela sob demanda. Mutar/desligar usa `track.enabled`,
+ * Captura câmera+microfone uma vez (já mutados) e tela sob demanda. Mutar/desligar usa `track.enabled`,
  * então o envio continua negociado (sem renegociar) e o estado vai para os outros via servidor.
  */
 export function useLocalMedia() {
@@ -42,11 +42,13 @@ export function useLocalMedia() {
           const stream = await navigator.mediaDevices.getUserMedia(constraints);
           // `released`: a sala recusou a entrada enquanto a permissão ainda estava pendente
           if (cancelled || releasedRef.current) return stopStream(stream);
+          // entra mutado: o dispositivo fica aberto (ligar depois é instantâneo), mas nada é enviado
+          stream.getTracks().forEach((t) => (t.enabled = false));
           acquired = stream;
           cameraRef.current = stream;
           setCamera(stream);
-          setMicOn(stream.getAudioTracks().length > 0);
-          setCamOn(stream.getVideoTracks().length > 0);
+          setMicOn(false);
+          setCamOn(false);
           if (constraints !== ATTEMPTS[0]) {
             setError(
               constraints.video

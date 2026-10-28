@@ -1,16 +1,23 @@
+/* Design tokens do rossik.dev.br: fundo oliva, destaque lima, texto off-white */
 :root {
-  --bg: #0e0b14;
-  --surface: #17131f;
-  --surface-2: #211b2e;
-  --border: #2d2540;
-  --text: #ece8f5;
-  --muted: #9b92b0;
-  --accent: #8b5cf6;
-  --accent-strong: #7c3aed;
-  --danger: #ef4444;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --radius: 14px;
+  --bg: #282c20;
+  --surface: #1a1f1a;
+  --surface-2: #111112;
+  --border: #ffffff1a;
+  --text: #e8e8e3;
+  --muted: #e8e8e3b3;
+  --accent: #c8f550;
+  --accent-strong: #c8f550;
+  --on-accent: #282c20;
+  --accent-soft: rgba(200, 245, 80, 0.16);
+  --overlay: rgba(26, 31, 26, 0.8);
+  --danger: #e40014;
+  --ok: #05df72;
+  --warn: #edb200;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --font-sans: var(--font-roboto), 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-display: var(--font-oswald), sans-serif;
 }
 
 * {
@@ -23,7 +30,7 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
   font-size: 15px;
 }
 
@@ -71,8 +78,11 @@ a {
 
 .brand {
   margin: 0;
+  font-family: var(--font-display);
   font-size: 34px;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 .brand span {
   color: var(--accent);
@@ -88,7 +98,7 @@ a {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: radial-gradient(900px 500px at 50% -10%, rgba(139, 92, 246, 0.18), transparent), var(--bg);
+  background: radial-gradient(900px 500px at 50% -10%, rgba(200, 245, 80, 0.1), transparent), var(--bg);
 }
 
 .join-card {
@@ -99,7 +109,7 @@ a {
   padding: 28px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
@@ -136,13 +146,13 @@ button.primary,
   border-radius: 10px;
   padding: 11px 16px;
   font-weight: 600;
-  color: #fff;
+  color: var(--on-accent);
   text-decoration: none;
   text-align: center;
 }
 button.primary:hover:not(:disabled),
 .link-btn:hover {
-  background: var(--accent);
+  filter: brightness(1.08);
 }
 button.wide {
   width: 100%;
@@ -213,8 +223,8 @@ button.ghost:hover {
   align-items: center;
 }
 .banner.warn {
-  background: rgba(245, 158, 11, 0.12);
-  border-bottom-color: rgba(245, 158, 11, 0.4);
+  background: rgba(237, 178, 0, 0.12);
+  border-bottom-color: rgba(237, 178, 0, 0.4);
 }
 
 .stage {
@@ -316,7 +326,8 @@ button.ghost:hover {
   place-items: center;
   font-size: 30px;
   font-weight: 700;
-  background: linear-gradient(135deg, var(--accent-strong), #4c1d95);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .tile figcaption {
   position: absolute;
@@ -329,7 +340,7 @@ button.ghost:hover {
   font-size: 13px;
 }
 .tile-name {
-  background: rgba(14, 11, 20, 0.75);
+  background: var(--overlay);
   border-radius: 8px;
   padding: 3px 8px;
   overflow: hidden;
@@ -337,7 +348,7 @@ button.ghost:hover {
   white-space: nowrap;
 }
 .tile-flag {
-  background: rgba(239, 68, 68, 0.85);
+  background: var(--danger);
   border-radius: 50%;
   width: 22px;
   height: 22px;
@@ -349,7 +360,8 @@ button.ghost:hover {
   top: 10px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent-strong);
+  background: var(--accent);
+  color: var(--on-accent);
   border: 0;
   border-radius: 8px;
   padding: 6px 12px;
@@ -361,26 +373,26 @@ button.ghost:hover {
   font-size: 11px;
   border-radius: 999px;
   padding: 2px 8px;
-  background: rgba(14, 11, 20, 0.75);
+  background: var(--overlay);
   border: 1px solid var(--border);
   white-space: nowrap;
 }
 .badge-connected {
   color: var(--ok);
-  border-color: rgba(34, 197, 94, 0.5);
+  border-color: rgba(5, 223, 114, 0.5);
 }
 .badge-connecting,
 .badge-reconnecting {
   color: var(--warn);
-  border-color: rgba(245, 158, 11, 0.5);
+  border-color: rgba(237, 178, 0, 0.5);
 }
 .badge-failed {
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.6);
+  border-color: rgba(228, 0, 20, 0.6);
 }
 .badge-self {
   color: var(--accent);
-  border-color: rgba(139, 92, 246, 0.5);
+  border-color: rgba(200, 245, 80, 0.5);
 }
 
 /* painel lateral */
@@ -459,7 +471,8 @@ button.ghost:hover {
   place-items: center;
   font-size: 13px;
   font-weight: 700;
-  background: linear-gradient(135deg, var(--accent-strong), #4c1d95);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .list .badge {
   margin-left: 0;
@@ -489,7 +502,7 @@ button.ghost:hover {
 }
 .msg.mine {
   align-self: flex-end;
-  background: rgba(124, 58, 237, 0.35);
+  background: var(--accent-soft);
 }
 .msg-meta {
   font-size: 12px;
@@ -550,12 +563,12 @@ button.ghost:hover {
   border-color: var(--accent);
 }
 .ctl[aria-pressed='true'] {
-  background: rgba(124, 58, 237, 0.3);
+  background: var(--accent-soft);
   border-color: var(--accent);
 }
 .ctl.off {
-  background: rgba(239, 68, 68, 0.18);
-  border-color: rgba(239, 68, 68, 0.55);
+  background: rgba(228, 0, 20, 0.18);
+  border-color: rgba(228, 0, 20, 0.55);
 }
 .ctl.danger {
   background: var(--danger);

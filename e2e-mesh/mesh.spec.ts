@@ -106,6 +106,8 @@ async function trio(browser: Browser, label: string) {
   const all = [ana, beto, cris];
   for (const u of all) await expect(participants(u.page)).toHaveCount(3);
   await expectMesh(all);
+  // todos entram mutados: liga a câmera para que a malha carregue vídeo real
+  for (const u of all) await u.page.getByRole('button', { name: 'Câmera', exact: true }).click();
   return { room, ana, beto, cris, all };
 }
 

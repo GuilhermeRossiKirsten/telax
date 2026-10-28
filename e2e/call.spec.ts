@@ -59,6 +59,18 @@ async function pair(browser: Browser, label: string) {
   return { room, ana, beto };
 }
 
+/** Todos entram mutados: testes que conferem áudio/vídeo reais ligam câmera e microfone antes. */
+async function goLive(...users: User[]) {
+  for (const u of users) {
+    for (const name of ['Microfone', 'Câmera']) {
+      const btn = u.page.getByRole('button', { name, exact: true });
+      await expect(btn).toHaveAttribute('aria-pressed', 'false');
+      await btn.click();
+      await expect(btn).toHaveAttribute('aria-pressed', 'true');
+    }
+  }
+}
+
 const participants = (p: Page) => p.getByTestId('participants').locator('li');
 const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile-camera"]', { hasText: name });
 
@@ -93,6 +105,7 @@ test('entrada pede só sala e nome, sem cadastro', async ({ browser }) => {
 
 test('dois participantes se conectam P2P direto, com áudio e vídeo', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'p2p');
+  await goLive(ana, beto);
   await expect(participants(ana.page)).toHaveCount(2);
   await expect(participants(beto.page)).toHaveCount(2);
   await expectConnected(ana.page, 'Beto');
@@ -126,19 +139,44 @@ test('dois participantes se conectam P2P direto, com áudio e vídeo', async ({ 
   await beto.ctx.close();
 });
 
+test('câmera e microfone entram mutados, nos tracks e para os outros participantes', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'mutados');
+  await expectConnected(beto.page, 'Ana');
+
+  const mic = ana.page.getByRole('button', { name: 'Microfone', exact: true });
+  const cam = ana.page.getByRole('button', { name: 'Câmera', exact: true });
+  await expect(mic).toHaveAttribute('aria-pressed', 'false');
+  await expect(cam).toHaveAttribute('aria-pressed', 'false');
+
+  // nada sai do navegador de Ana: os tracks capturados estão com enabled=false
+  const enabled = await ana.page.evaluate(() =>
+    (window as unknown as { __streams: MediaStream[] }).__streams.flatMap((s) => s.getTracks().map((t) => t.enabled)),
+  );
+  expect(enabled.length).toBeGreaterThan(0);
+  expect(enabled.every((e) => e === false)).toBe(true);
+
+  // e Beto já vê Ana sem câmera e com o microfone cortado
+  await expect(tileOf(beto.page, 'Ana').locator('.avatar')).toBeVisible();
+  await expect(tileOf(beto.page, 'Ana').locator('.tile-flag')).toBeVisible();
+
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
 test('microfone e câmera refletem o estado nos outros participantes', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'estado');
   await expectConnected(beto.page, 'Ana');
 
-  await ana.page.getByRole('button', { name: 'Microfone', exact: true }).click();
-  await expect(tileOf(beto.page, 'Ana').locator('.tile-flag')).toBeVisible();
+  // entram mutados: o primeiro clique liga, o segundo desliga
   await ana.page.getByRole('button', { name: 'Microfone', exact: true }).click();
   await expect(tileOf(beto.page, 'Ana').locator('.tile-flag')).toHaveCount(0);
+  await ana.page.getByRole('button', { name: 'Microfone', exact: true }).click();
+  await expect(tileOf(beto.page, 'Ana').locator('.tile-flag')).toBeVisible();
 
   await ana.page.getByRole('button', { name: 'Câmera', exact: true }).click();
-  await expect(tileOf(beto.page, 'Ana').locator('.avatar')).toBeVisible();
-  await ana.page.getByRole('button', { name: 'Câmera', exact: true }).click();
   await expectVideoPlaying(tileOf(beto.page, 'Ana'));
+  await ana.page.getByRole('button', { name: 'Câmera', exact: true }).click();
+  await expect(tileOf(beto.page, 'Ana').locator('.avatar')).toBeVisible();
 
   await ana.ctx.close();
   await beto.ctx.close();
@@ -202,6 +240,7 @@ test('arquivo enviado por um participante chega íntegro no outro', async ({ bro
 
 test('reiniciar conexões renegocia sem ninguém sair da sala', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'reinicio');
+  await goLive(ana, beto);
   await expectConnected(ana.page, 'Beto');
   await expectConnected(beto.page, 'Ana');
   await expectVideoPlaying(tileOf(beto.page, 'Ana'));
@@ -244,6 +283,8 @@ test('recarregar a aba reconecta sem deixar participante duplicado', async ({ br
   await expectConnected(beto.page, 'Ana');
   await expectConnected(ana.page, 'Beto');
   await expect(participants(ana.page)).toHaveCount(2, { timeout: 25_000 });
+  // depois de recarregar, Beto volta mutado: liga a câmera para haver vídeo
+  await beto.page.getByRole('button', { name: 'Câmera', exact: true }).click();
   await expectVideoPlaying(tileOf(ana.page, 'Beto'));
   await ana.ctx.close();
   await beto.ctx.close();
