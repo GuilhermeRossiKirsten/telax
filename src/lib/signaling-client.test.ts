@@ -131,6 +131,41 @@ describe('polling', () => {
   });
 });
 
+describe('re-join repetido (servidor que não lembra de nós)', () => {
+  it('após 3 re-joins em 30 s para de tentar: status error, sem novos joins nem polls', async () => {
+    let n = 0;
+    const t = setup({
+      join: () => ok(joinBody(`p${++n}`)),
+      events: () => ok({ error: 'gone' }, 410),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(t.joined).toHaveLength(4); // join inicial + 3 re-joins
+    expect(t.statuses.at(-1)).toBe('error');
+    const calls = t.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.calls).toHaveLength(calls);
+    await expect(t.client.chat('oi')).rejects.toThrow('not joined');
+  });
+
+  it('410 esporádico (um a cada 40 s) continua reentrando normalmente', async () => {
+    let last = -Infinity;
+    const t = setup({
+      join: (call) => ok(joinBody(`p${call}`)),
+      events: () => {
+        if (Date.now() - last < 40_000) return ok({ events: [], cursor: 5 });
+        last = Date.now();
+        return ok({ error: 'gone' }, 410);
+      },
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(200_000);
+    expect(t.joined.length).toBeGreaterThanOrEqual(5);
+    expect(t.statuses).not.toContain('error');
+    t.client.stop();
+  });
+});
+
 describe('token', () => {
   it('o poll envia o token do join na query', async () => {
     const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });

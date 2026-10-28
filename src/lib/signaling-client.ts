@@ -2,6 +2,12 @@ import type { PeerInfo, PeerMediaState, RoomEvent, SignalData } from './types';
 
 export const POLL_MS = 1000;
 const MAX_BACKOFF_MS = 5000;
+/**
+ * Re-joins seguidos (410) significam que o servidor não guarda a sala entre requisições, ex.: várias
+ * instâncias serverless sem memória compartilhada. Reentrar sem parar só cria participantes fantasma.
+ */
+export const MAX_REJOINS = 3;
+export const REJOIN_WINDOW_MS = 30_000;
 
 export type SignalingStatus = 'connecting' | 'online' | 'reconnecting' | 'full' | 'error';
 
@@ -36,6 +42,7 @@ export function createSignalingClient(opts: Options) {
   let cursor = 0;
   let failures = 0;
   let hasJoined = false;
+  let rejoinTimes: number[] = [];
   let stopped = false;
   let status: SignalingStatus | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,6 +89,13 @@ export function createSignalingClient(opts: Options) {
     if (stopped) return true;
     if (res.status === 410) {
       peerId = null;
+      const now = Date.now();
+      rejoinTimes = rejoinTimes.filter((t) => now - t < REJOIN_WINDOW_MS);
+      if (rejoinTimes.length >= MAX_REJOINS) {
+        setStatus('error');
+        return false;
+      }
+      rejoinTimes.push(now);
       return join();
     }
     if (!res.ok) throw new Error(`events ${res.status}`);

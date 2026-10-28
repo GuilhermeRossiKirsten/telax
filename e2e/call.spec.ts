@@ -270,6 +270,36 @@ test('o 9º participante vê "Sala cheia"', async ({ browser, request }) => {
   await u.ctx.close();
 });
 
+test('servidor que esquece o participante: para de reentrar, explica e solta a câmera', async ({ browser }) => {
+  const room = uniqueRoom('esquece');
+  const u = await newUser(browser);
+  let joins = 0;
+  u.page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().endsWith('/join')) joins++;
+  });
+  // simula várias instâncias sem memória compartilhada (ex.: Vercel): o poll nunca reconhece o peerId
+  await u.page.route('**/api/rooms/*/events*', (route) =>
+    route.fulfill({ status: 410, contentType: 'application/json', body: '{"error":"gone"}' }),
+  );
+  await enter(u, room, 'Ana');
+  const alert = u.page.locator('p[role="alert"]');
+  await expect(alert).toContainText('Não foi possível manter a sala');
+  await expect(u.page.getByRole('button', { name: 'Tentar novamente' })).toBeVisible();
+  const settled = joins;
+  await u.page.waitForTimeout(3000);
+  expect(joins).toBe(settled); // parou de reentrar
+  expect(joins).toBeLessThanOrEqual(4); // join inicial + 3 re-joins
+  await expect
+    .poll(() =>
+      u.page.evaluate(() => {
+        const streams = (window as unknown as { __streams: MediaStream[] }).__streams;
+        return streams.length > 0 && streams.every((s) => s.getTracks().every((t) => t.readyState === 'ended'));
+      }),
+    )
+    .toBe(true);
+  await u.ctx.close();
+});
+
 test('sala com acento e espaço mostra o nome certo e conecta os dois', async ({ browser }) => {
   const room = `Reunião Ótima ${Date.now()}`;
   const ana = await newUser(browser);

@@ -64,6 +64,12 @@ mesma sala podem ser atendidos por instâncias diferentes e **não se enxergarem
 `next start` (uma única instância) funciona de forma confiável; na Vercel funciona em "melhor
 esforço" (por exemplo, com pouco tráfego e a mesma instância reaproveitada), sem garantia.
 
+Quando uma requisição cai numa instância que não conhece o participante, o servidor responde 410 e o
+cliente entra de novo (vira um participante novo). Se isso se repetir **3 vezes em 30 s**, o app
+desiste: libera câmera e conexões e mostra "Não foi possível manter a sala" com o botão
+"Tentar novamente". Isso evita a enxurrada de participantes duplicados, mas **não faz a Vercel
+funcionar de forma confiável**; para isso é preciso o armazenamento compartilhado descrito abaixo.
+
 O armazenamento fica atrás da interface `RoomStore` (`src/server/room-store.ts`). Para um deploy
 confiável na Vercel, implemente essa interface sobre Redis (ou outro armazenamento compartilhado) e
 troque o retorno de `getStore()` em `src/server/store.ts`; nada mais precisa mudar. Isso **não** foi
@@ -137,11 +143,12 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 149 passaram, 0 falharam |
+| Unidade (store, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 151 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (11 cenários), repetido 2× | `npx playwright test --repeat-each=2` | 22 passaram |
-| E2E, 3 participantes (5 cenários), repetido 2× | `npx playwright test -c playwright.mesh.config.ts --repeat-each=2` | 10 passaram |
+| E2E, 2 participantes (12 cenários), 1 execução | `npx playwright test` | 12 passaram |
+| E2E, 3 participantes (5 cenários), 1 execução | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
+| Duas instâncias de produção atrás de um balanceador round-robin (manual, 1 aba, 20 s) | script ad hoc | 4 `join` e tela de erro (antes da correção: 9 em 25 s, sem parar) |
 
 O que os E2E de fato verificam: entrada só com sala e nome; dois participantes conectados com
 vídeo cujo contador de quadros decodificados avança e bytes de áudio/vídeo recebidos, com o par

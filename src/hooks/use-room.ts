@@ -84,7 +84,12 @@ export function useRoom(args: { room: string; name: string; tracks: LocalTracks;
     const client = createSignalingClient({
       room,
       name,
-      onStatus: (s) => !disposed && setStatus(s),
+      onStatus: (s) => {
+        if (disposed) return;
+        // sem sinalização não há como manter os pares: solta as conexões em vez de deixá-las órfãs
+        if (s === 'error') managerRef.current?.close();
+        setStatus(s);
+      },
 
       onJoined: (result, isRejoin) => {
         if (disposed) return;

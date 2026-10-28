@@ -31,9 +31,10 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   }, []);
 
   const { stopAll } = local;
+  const ended = r.status === 'full' || r.status === 'error';
   useEffect(() => {
-    if (r.status === 'full') stopAll();
-  }, [r.status, stopAll]);
+    if (ended) stopAll();
+  }, [ended, stopAll]);
 
   const nameOf = useCallback((id: string) => r.participants.find((p) => p.id === id)?.name ?? 'alguém', [r.participants]);
 
@@ -62,6 +63,30 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           </h1>
           <p role="alert">Sala cheia: &quot;{room}&quot; já tem 8 participantes.</p>
           <Link className="primary link-btn" href={`/?room=${encodeURIComponent(room)}`}>
+            Voltar
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (r.status === 'error') {
+    return (
+      <main className="join-page">
+        <div className="join-card">
+          <h1 className="brand">
+            tela<span>X</span>
+          </h1>
+          <p role="alert">Não foi possível manter a sala &quot;{room}&quot;.</p>
+          <p className="muted">
+            O servidor deixou de reconhecer você várias vezes seguidas. Isso costuma acontecer em hospedagem
+            serverless (como a Vercel), onde cada requisição pode cair em uma instância diferente que não
+            guarda a sala.
+          </p>
+          <button className="primary" onClick={() => location.reload()}>
+            Tentar novamente
+          </button>
+          <Link className="ghost link-btn" href={`/?room=${encodeURIComponent(room)}`}>
             Voltar
           </Link>
         </div>
