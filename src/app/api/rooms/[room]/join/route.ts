@@ -4,8 +4,8 @@ import { invalid, json, postRoute } from '@/server/http';
 
 export const dynamic = 'force-dynamic';
 
-export const POST = postRoute((store, room, body) => {
+export const POST = postRoute(async (store, room, body) => {
   const name = normalizeName(body.name);
   if (!name) return invalid();
-  return json({ ...store.join(room, name), iceServers: getIceServers(process.env) });
+  return json({ ...(await store.join(room, name)), iceServers: getIceServers(process.env) });
 });

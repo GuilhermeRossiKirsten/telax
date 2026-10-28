@@ -47,7 +47,7 @@ export function postRoute(
     if (idField && (!isString(body[idField]) || !isString(body.token))) return invalid();
     try {
       const store = getStore();
-      if (idField) store.authenticate(room, body[idField] as string, body.token as string);
+      if (idField) await store.authenticate(room, body[idField] as string, body.token as string);
       return await handler(store, room, body);
     } catch (e) {
       return storeErrorResponse(e);

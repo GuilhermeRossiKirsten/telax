@@ -13,8 +13,8 @@ export async function GET(req: Request, ctx: RoomContext): Promise<Response> {
   if (!room || !peerId || !token) return invalid();
   try {
     const store = getStore();
-    store.authenticate(room, peerId, token);
-    return json(store.events(room, peerId, Number.isFinite(since) && since > 0 ? since : 0));
+    await store.authenticate(room, peerId, token);
+    return json(await store.events(room, peerId, Number.isFinite(since) && since > 0 ? since : 0));
   } catch (e) {
     return storeErrorResponse(e);
   }

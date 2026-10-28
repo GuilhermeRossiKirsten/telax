@@ -3,9 +3,9 @@ import { invalid, json, postRoute } from '@/server/http';
 
 export const dynamic = 'force-dynamic';
 
-export const POST = postRoute((store, room, body) => {
+export const POST = postRoute(async (store, room, body) => {
   const text = normalizeChat(body.text);
   if (!text) return invalid();
-  store.chat(room, body.from as string, text);
+  await store.chat(room, body.from as string, text);
   return json({ ok: true });
 }, 'from');

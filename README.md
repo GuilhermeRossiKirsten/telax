@@ -25,13 +25,15 @@ Para testar sozinho, abra a mesma sala em duas abas (ou em dois navegadores) com
 
 ## Configuração (variáveis de ambiente)
 
-Tudo é opcional. Copie `.env.example` para `.env.local` se precisar de TURN.
+Tudo é opcional. Copie `.env.example` para `.env.local` se precisar de TURN ou MongoDB.
 
 | Variável | Para que serve |
 |---|---|
 | `TURN_URLS` | URLs do servidor TURN, separadas por vírgula (`turn:host:3478,turns:host:5349`) |
 | `TURN_USERNAME` | usuário do TURN |
 | `TURN_CREDENTIAL` | senha do TURN |
+| `MONGODB_URI` | guarda as salas no MongoDB, compartilhadas entre instâncias (**necessário na Vercel**). Sem ela, as salas ficam na memória do processo |
+| `MONGODB_DB` | nome do banco (padrão `telax`) |
 
 O TURN só é incluído se **as três** estiverem definidas. O STUN público do Google
 (`stun:stun.l.google.com:19302`) é sempre usado. As credenciais TURN são entregues a quem entra na
@@ -56,24 +58,32 @@ O projeto é um app Next.js padrão (sem `vercel.json`, sem variáveis obrigató
 npx vercel          # ou importe o repositório no painel da Vercel
 ```
 
-### ⚠️ Limitação importante: estado em memória
+### Salas compartilhadas: MongoDB (necessário na Vercel)
 
-Por decisão de projeto, **não há serviço externo**: as salas ficam na memória do processo do
-servidor. Na Vercel cada instância serverless tem a própria memória, então dois participantes da
-mesma sala podem ser atendidos por instâncias diferentes e **não se enxergarem**. Em `next dev` e
-`next start` (uma única instância) funciona de forma confiável; na Vercel funciona em "melhor
-esforço" (por exemplo, com pouco tráfego e a mesma instância reaproveitada), sem garantia.
+Na Vercel cada requisição pode ser atendida por uma instância diferente, e cada instância tem a própria
+memória. Sem armazenamento compartilhado, a instância que recebe o `/events` não conhece quem entrou pela
+outra: responde 410, o cliente reentra como "participante novo" e a sala nunca se estabiliza.
 
-Quando uma requisição cai numa instância que não conhece o participante, o servidor responde 410 e o
-cliente entra de novo (vira um participante novo). Se isso se repetir **3 vezes em 30 s**, o app
-desiste: libera câmera e conexões e mostra "Não foi possível manter a sala" com o botão
-"Tentar novamente". Isso evita a enxurrada de participantes duplicados, mas **não faz a Vercel
-funcionar de forma confiável**; para isso é preciso o armazenamento compartilhado descrito abaixo.
+Com `MONGODB_URI` definida, as salas ficam no MongoDB e todas as instâncias enxergam as mesmas:
 
-O armazenamento fica atrás da interface `RoomStore` (`src/server/room-store.ts`). Para um deploy
-confiável na Vercel, implemente essa interface sobre Redis (ou outro armazenamento compartilhado) e
-troque o retorno de `getStore()` em `src/server/store.ts`; nada mais precisa mudar. Isso **não** foi
-implementado.
+1. Crie um cluster (o plano gratuito do Atlas serve) ou conecte o banco ao projeto na Vercel
+   (Storage / Marketplace), o que já cria a variável `MONGODB_URI` no projeto.
+2. No Atlas, libere o acesso de rede para a Vercel (Network Access; as funções da Vercel não têm IP fixo,
+   então costuma ser `0.0.0.0/0` com usuário e senha fortes).
+3. Faça um novo deploy para a variável valer.
+
+Para rodar localmente contra o mesmo banco, ponha `MONGODB_URI` no `.env.local` (arquivo ignorado pelo git).
+**Não coloque a URI com senha no README, no código nem em arquivo versionado.** Sem a variável o app
+continua funcionando em memória, o que é confiável com uma única instância (`next dev`, `next start`).
+
+Como as salas são guardadas: um documento por sala (coleção `rooms`, banco `telax`) com participantes e log
+de eventos. Toda operação é um único update atômico desse documento, então duas instâncias disputando a
+8ª vaga, ou enviando eventos ao mesmo tempo, não se atropelam. Salas sem escrita há 1 h são apagadas por um
+índice TTL. O conteúdo dos usuários (chat, nome, SDP) sempre entra como valor literal, nunca como expressão,
+e todo `peerId` é validado como UUID antes de virar parte de um caminho do banco.
+
+Se o banco ficar inacessível, as chamadas falham e o app mostra "Reconectando"; depois de 3 reentradas
+seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o botão "Tentar novamente".
 
 ## Como funciona
 
@@ -104,7 +114,11 @@ implementado.
 
 ## Limitações conhecidas
 
-- **Estado em memória** (ver acima): confiável só em instância única.
+- **Sem `MONGODB_URI` o estado é em memória** (ver acima): confiável só em instância única. Na Vercel, use o MongoDB.
+- **Custo do MongoDB:** cada chamada à API faz de 1 a 3 idas ao banco (o polling de ~1 s por participante vira
+  leitura/escrita). O log de eventos fica dentro do documento da sala (até 500 eventos / 5 min); um
+  participante autenticado mal-intencionado pode encher a própria sala de sinais grandes até o documento
+  estourar o limite de 16 MB, o que só derruba aquela sala.
 - **Malha completa:** cada participante envia o próprio vídeo a todos os outros. É confortável até
   ~4–6 pessoas; o limite da sala é 8. Não há SFU nem servidor de mídia (requisito do projeto).
 - **Sem TURN configurado**, redes com NAT simétrico/firewall restritivo não conectam.
@@ -116,9 +130,9 @@ implementado.
   continua aceso); o compartilhamento de tela não envia áudio.
 - **Sem autenticação de sala:** quem souber o nome da sala entra (o token protege um participante
   dos outros, não a sala de quem chega). Não há senha nem convite.
-- **Sem limite de número de salas por instância:** como tudo é memória, um cliente mal-intencionado
-  pode criar muitas salas e esgotar a memória da instância. As requisições e cada sala têm limites,
-  o total de salas não.
+- **Sem limite de número de salas:** um cliente mal-intencionado pode criar muitas salas e esgotar a memória
+  da instância (ou o armazenamento do cluster, com MongoDB; lá o TTL de 1 h apaga as abandonadas). As
+  requisições e cada sala têm limites, o total de salas não.
 - **Histórico e MIME:** o tipo (MIME) de um arquivo recebido é o declarado por quem enviou.
 - Sem tratamento de troca de dispositivo (câmera/microfone) durante a chamada.
 - Um erro de join diferente de "sala cheia" (por exemplo, 500 do servidor) aparece como
@@ -129,6 +143,9 @@ implementado.
 ```bash
 npx vitest run         # unidade (regras, store, rotas, cliente de sinalização, PeerManager, arquivos)
 npx tsc --noEmit       # tipos
+# testes do store contra um MongoDB real (descartável; sem a variável eles são pulados):
+docker run -d --rm --name telax-mongo -p 27018:27017 mongo:7
+MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run
 npm run test:e2e       # Playwright: sobe build + servidor na porta 3100 e abre dois navegadores
 ```
 
@@ -143,12 +160,16 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 151 passaram, 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 161 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (12 cenários), 1 execução | `npx playwright test` | 12 passaram |
-| E2E, 3 participantes (5 cenários), 1 execução | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
-| Duas instâncias de produção atrás de um balanceador round-robin (manual, 1 aba, 20 s) | script ad hoc | 4 `join` e tela de erro (antes da correção: 9 em 25 s, sem parar) |
+| E2E, 2 participantes (12 cenários), 1 execução, store em memória | `npx playwright test` | 12 passaram |
+| E2E, 2 participantes (12 cenários), 1 execução, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram |
+| E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
+| E2E, 3 participantes (5 cenários), 1 execução, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
+| Duas instâncias de produção atrás de um balanceador round-robin, **sem MongoDB** (manual, 1 aba, 20 s) | script ad hoc | 4 `join` e tela de erro (antes: 9 em 25 s, sem parar) |
+| Duas instâncias atrás do round-robin, **com MongoDB** (manual, 2 pessoas, 26 s) | script ad hoc | "2 na sala" estável nos dois, 1 `join` cada, "Conectado" com vídeo avançando, 0 erros HTTP/console/servidor |
 
 O que os E2E de fato verificam: entrada só com sala e nome; dois participantes conectados com
 vídeo cujo contador de quadros decodificados avança e bytes de áudio/vídeo recebidos, com o par
@@ -159,14 +180,14 @@ a aba; sala com acento no nome; 9º participante ("Sala cheia", com câmera e mi
 em 3 pessoas, as 3 conexões do mesh, chat, reinício global feito por uma pessoa e por duas ao mesmo
 tempo, e saída de um participante.
 
-Não foi executado: TURN real, redes com NAT simétrico, Firefox/Safari, câmeras reais, mais de 3
+Não foi executado: **MongoDB Atlas real e o deploy na Vercel** (os testes usaram um MongoDB 7 local em Docker), TURN real, redes com NAT simétrico, Firefox/Safari, câmeras reais, mais de 3
 participantes em paralelo, e deploy real na Vercel (o projeto é um app Next.js padrão, mas não foi
 publicado nem testado lá).
 
 ## Estrutura
 
 ```
-src/server/      RoomStore (interface), MemoryRoomStore, ICE, helpers das rotas
+src/server/      RoomStore (interface), MemoryRoomStore, MongoRoomStore, escolha por ambiente (store.ts), ICE, helpers das rotas
 src/app/api/     rotas de sinalização (join, events, signal, chat, state, restart, leave)
 src/lib/         cliente de sinalização, PeerManager, regras de negociação, arquivos, validação
 src/hooks/       useLocalMedia (câmera/mic/tela), useRoom (sala + mesh)
