@@ -24,6 +24,8 @@ export function useLocalMedia() {
   const [camOn, setCamOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const screenRef = useRef<MediaStream | null>(null);
+  const cameraRef = useRef<MediaStream | null>(null);
+  const releasedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,8 +40,10 @@ export function useLocalMedia() {
       for (const constraints of ATTEMPTS) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia(constraints);
-          if (cancelled) return stopStream(stream);
+          // `released`: a sala recusou a entrada enquanto a permissão ainda estava pendente
+          if (cancelled || releasedRef.current) return stopStream(stream);
           acquired = stream;
+          cameraRef.current = stream;
           setCamera(stream);
           setMicOn(stream.getAudioTracks().length > 0);
           setCamOn(stream.getVideoTracks().length > 0);
@@ -64,6 +68,19 @@ export function useLocalMedia() {
       stopStream(screenRef.current);
       screenRef.current = null;
     };
+  }, []);
+
+  /** Solta câmera, microfone e tela (luz da câmera apagada) quando não há chamada, ex.: sala cheia. */
+  const stopAll = useCallback(() => {
+    releasedRef.current = true;
+    stopStream(cameraRef.current);
+    cameraRef.current = null;
+    stopStream(screenRef.current);
+    screenRef.current = null;
+    setCamera(null);
+    setScreen(null);
+    setMicOn(false);
+    setCamOn(false);
   }, []);
 
   const toggleMic = useCallback(() => {
@@ -121,6 +138,7 @@ export function useLocalMedia() {
     hasMic: tracks.audio !== null,
     hasCam: tracks.camera !== null,
     error,
+    stopAll,
     toggleMic,
     toggleCam,
     toggleScreen,

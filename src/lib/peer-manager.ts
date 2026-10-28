@@ -13,6 +13,8 @@ const DISCONNECT_GRACE_MS = 5000;
 const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 30_000;
 const NEGOTIATE_TIMEOUT_MS = 8000;
+/** Sessão que não conecta nesse prazo (ex.: offer ou reset perdidos) é tratada como 'failed'. */
+const SESSION_TIMEOUT_MS = 20_000;
 const noop = () => {};
 
 export type PeerManagerOpts = {
@@ -37,7 +39,9 @@ type Entry = {
   channel: RTCDataChannel | null;
   assembler: FileAssembler;
   remoteSet: boolean;
-  pending: RTCIceCandidateInit[];
+  /** Sessão corrente: gerada pelo offerer a cada PC; quem responde copia da offer. */
+  sid?: number;
+  pending: Array<{ sid: number; candidate: RTCIceCandidateInit }>;
   remoteTracks: RemoteTracks;
   sendChain: Promise<void>;
   everConnected: boolean;
@@ -45,6 +49,7 @@ type Entry = {
   lastState: ConnState | null;
   disconnectTimer?: ReturnType<typeof setTimeout>;
   retryTimer?: ReturnType<typeof setTimeout>;
+  sessionTimer?: ReturnType<typeof setTimeout>;
   settle?: () => void;
 };
 
@@ -92,15 +97,18 @@ export class PeerManager {
 
     switch (data.kind) {
       case 'offer':
-        if (!e.offerer && data.sdp) await this.answer(e, data.sdp);
+        if (!e.offerer && data.sdp && typeof data.sid === 'number') await this.answer(e, data.sdp, data.sid);
         break;
       case 'answer':
-        if (e.offerer && data.sdp) await this.applyAnswer(e, data.sdp);
+        // answer de outra sessão (ex.: de antes de um reset) não pode parear com o PC atual
+        if (e.offerer && data.sdp && data.sid === e.sid) await this.applyAnswer(e, data.sdp);
         break;
       case 'candidate':
-        if (!data.candidate) break;
+        if (!data.candidate || typeof data.sid !== 'number') break;
+        if (e.sid !== undefined && data.sid !== e.sid) break;
         if (e.remoteSet) e.pc.addIceCandidate(data.candidate).catch(noop);
-        else e.pending.push(data.candidate);
+        // quem responde, antes da offer: a sessão só é conhecida em markRemoteSet
+        else e.pending.push({ sid: data.sid, candidate: data.candidate });
         break;
       case 'reset':
         if (e.offerer) this.reopen(e);
@@ -143,6 +151,7 @@ export class PeerManager {
     e.pc = pc;
     e.remoteSet = false;
     e.pending = [];
+    e.sid = e.offerer ? 1 + Math.floor(Math.random() * 2 ** 31) : undefined;
     e.remoteTracks = {};
     e.channel = null;
     e.assembler = new FileAssembler((file) => this.opts.onFile(e.id, file));
@@ -163,7 +172,7 @@ export class PeerManager {
 
     pc.onicecandidate = (ev) => {
       if (e.pc !== pc || !ev.candidate) return;
-      this.signalTo(e, { kind: 'candidate', candidate: ev.candidate.toJSON() });
+      this.signalTo(e, { kind: 'candidate', sid: e.sid, candidate: ev.candidate.toJSON() });
     };
     pc.ontrack = (ev) => {
       if (e.pc !== pc) return;
@@ -175,6 +184,18 @@ export class PeerManager {
     pc.onconnectionstatechange = () => {
       if (e.pc === pc) this.onState(e, pc.connectionState);
     };
+
+    // O offerer só arma o watchdog quando a offer sai (offer()): na fila de reinício ele pode esperar a vez.
+    if (!e.offerer) this.armSessionTimer(e, pc);
+  }
+
+  /** Se o par não conectar em SESSION_TIMEOUT_MS (sinal perdido, etc.), trata como `failed` e reabre com backoff. */
+  private armSessionTimer(e: Entry, pc: RTCPeerConnection): void {
+    if (e.sessionTimer) clearTimeout(e.sessionTimer);
+    e.sessionTimer = setTimeout(() => {
+      e.sessionTimer = undefined;
+      if (e.pc === pc && pc.connectionState !== 'connected') this.onState(e, 'failed');
+    }, SESSION_TIMEOUT_MS);
   }
 
   private closePc(e: Entry): void {
@@ -248,8 +269,10 @@ export class PeerManager {
   private clearTimers(e: Entry): void {
     if (e.disconnectTimer) clearTimeout(e.disconnectTimer);
     if (e.retryTimer) clearTimeout(e.retryTimer);
+    if (e.sessionTimer) clearTimeout(e.sessionTimer);
     e.disconnectTimer = undefined;
     e.retryTimer = undefined;
+    e.sessionTimer = undefined;
   }
 
   private report(e: Entry, state: ConnState): void {
@@ -275,7 +298,8 @@ export class PeerManager {
     if (!current()) return;
     await pc.setLocalDescription(offer);
     if (!current()) return;
-    this.signalTo(e, { kind: 'offer', sdp: pc.localDescription?.sdp ?? offer.sdp });
+    this.signalTo(e, { kind: 'offer', sid: e.sid, sdp: pc.localDescription?.sdp ?? offer.sdp });
+    this.armSessionTimer(e, pc);
     await this.settled(e, pc);
   }
 
@@ -294,10 +318,12 @@ export class PeerManager {
     });
   }
 
-  private async answer(e: Entry, sdp: string): Promise<void> {
+  private async answer(e: Entry, sdp: string, sid: number): Promise<void> {
     // Sem renegociação dentro de uma sessão: toda offer nova é uma sessão nova.
     if (e.remoteSet) this.recreate(e, 'retry');
     const pc = e.pc;
+    // antes de qualquer await: candidatos que chegarem durante a negociação já são filtrados por ele
+    e.sid = sid;
     await pc.setRemoteDescription({ type: 'offer', sdp });
     if (e.pc !== pc) return;
     this.adoptTransceivers(e, pc);
@@ -306,7 +332,7 @@ export class PeerManager {
     if (e.pc !== pc) return;
     await pc.setLocalDescription(answer);
     if (e.pc !== pc) return;
-    this.signalTo(e, { kind: 'answer', sdp: pc.localDescription?.sdp ?? answer.sdp });
+    this.signalTo(e, { kind: 'answer', sid, sdp: pc.localDescription?.sdp ?? answer.sdp });
   }
 
   private async applyAnswer(e: Entry, sdp: string): Promise<void> {
@@ -319,9 +345,9 @@ export class PeerManager {
 
   private async markRemoteSet(e: Entry, pc: RTCPeerConnection): Promise<void> {
     e.remoteSet = true;
-    const queued = e.pending;
+    const queued = e.pending.filter((p) => p.sid === e.sid);
     e.pending = [];
-    await Promise.all(queued.map((c) => pc.addIceCandidate(c).catch(noop)));
+    await Promise.all(queued.map((p) => pc.addIceCandidate(p.candidate).catch(noop)));
   }
 
   /** Envia em série por par, para a offer sempre chegar antes dos candidatos dela. */

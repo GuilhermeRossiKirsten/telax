@@ -5,8 +5,9 @@ import { createSignalingClient, type JoinResult, type SignalingStatus } from './
 type Handler = (call: number, url: URL, init: RequestInit) => Response | Promise<Response>;
 
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const joinBody = (peerId: string, cursor = 5) => ({
+const joinBody = (peerId: string, cursor = 5, token = `tok-${peerId}`) => ({
   peerId,
+  token,
   participants: [],
   cursor,
   gen: 0,
@@ -130,6 +131,45 @@ describe('polling', () => {
   });
 });
 
+describe('token', () => {
+  it('o poll envia o token do join na query', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    const poll = t.calls.find((c) => c.route === 'events')!;
+    expect(poll.url.searchParams.get('token')).toBe('tok-p1');
+    t.client.stop();
+  });
+
+  it('onJoined não recebe o token', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    expect(t.joined[0][0]).not.toHaveProperty('token');
+    expect(JSON.stringify(t.joined)).not.toContain('tok-p1');
+    t.client.stop();
+  });
+
+  it('após 410 o re-join passa a usar o token novo no poll e nos POST', async () => {
+    const t = setup({
+      join: (call) => ok(joinBody(call === 1 ? 'p1' : 'p2', 5, call === 1 ? 'velho' : 'novo')),
+      events: (call) => (call === 1 ? ok({ error: 'gone' }, 410) : ok({ events: [], cursor: 5 })),
+      chat: () => ok({ ok: true }),
+      leave: () => ok({ ok: true }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(1000); // 410 → re-join
+    await vi.advanceTimersByTimeAsync(1000);
+    await t.client.chat('oi');
+    t.client.leave();
+    const last = t.calls.filter((c) => c.route === 'events').at(-1)!;
+    expect(last.url.searchParams.get('token')).toBe('novo');
+    const body = (route: string) => JSON.parse(String(t.calls.find((c) => c.route === route)!.init.body));
+    expect(body('chat')).toEqual({ from: 'p2', token: 'novo', text: 'oi' });
+    expect(body('leave')).toEqual({ peerId: 'p2', token: 'novo' });
+    t.client.stop();
+  });
+});
+
 describe('stop e leave', () => {
   it('stop cancela o timer e ignora resposta pendente', async () => {
     let release!: (r: Response) => void;
@@ -146,7 +186,7 @@ describe('stop e leave', () => {
     expect(t.calls.filter((c) => c.route === 'events')).toHaveLength(1);
   });
 
-  it('stop durante um join pendente avisa leave do peerId recebido e não notifica onJoined', async () => {
+  it('stop durante um join pendente avisa leave do peerId e token recebidos e não notifica onJoined', async () => {
     let release!: (r: Response) => void;
     const t = setup({
       join: () => new Promise<Response>((resolve) => (release = resolve)),
@@ -158,11 +198,11 @@ describe('stop e leave', () => {
     await started;
     const call = t.calls.find((c) => c.route === 'leave');
     expect(call).toBeDefined();
-    expect(JSON.parse(String(call!.init.body))).toEqual({ peerId: 'p9' });
+    expect(JSON.parse(String(call!.init.body))).toEqual({ peerId: 'p9', token: 'tok-p9' });
     expect(t.joined).toHaveLength(0);
   });
 
-  it('leave envia o peerId com keepalive', async () => {
+  it('leave envia o peerId e o token com keepalive', async () => {
     const t = setup({
       join: () => ok(joinBody('p1')),
       events: () => ok({ events: [], cursor: 5 }),
@@ -171,14 +211,14 @@ describe('stop e leave', () => {
     await t.client.start();
     t.client.leave();
     const call = t.calls.find((c) => c.route === 'leave')!;
-    expect(JSON.parse(String(call.init.body))).toEqual({ peerId: 'p1' });
+    expect(JSON.parse(String(call.init.body))).toEqual({ peerId: 'p1', token: 'tok-p1' });
     expect(call.init.keepalive).toBe(true);
     t.client.stop();
   });
 });
 
 describe('envio', () => {
-  it('signal, chat, setState e restart postam com from = peerId; restart devolve gen', async () => {
+  it('signal, chat, setState e restart postam com from = peerId e token; restart devolve gen', async () => {
     const t = setup({
       join: () => ok(joinBody('p1')),
       events: () => ok({ events: [], cursor: 5 }),
@@ -193,10 +233,10 @@ describe('envio', () => {
     await t.client.setState({ audio: true, video: false, sharing: false });
     expect(await t.client.restart()).toBe(3);
     const body = (route: string) => JSON.parse(String(t.calls.find((c) => c.route === route)!.init.body));
-    expect(body('signal')).toEqual({ from: 'p1', to: 'p2', data: { gen: 0, kind: 'offer', sdp: 'v=0' } });
-    expect(body('chat')).toEqual({ from: 'p1', text: 'oi' });
-    expect(body('state')).toEqual({ from: 'p1', audio: true, video: false, sharing: false });
-    expect(body('restart')).toEqual({ from: 'p1' });
+    expect(body('signal')).toEqual({ from: 'p1', token: 'tok-p1', to: 'p2', data: { gen: 0, kind: 'offer', sdp: 'v=0' } });
+    expect(body('chat')).toEqual({ from: 'p1', token: 'tok-p1', text: 'oi' });
+    expect(body('state')).toEqual({ from: 'p1', token: 'tok-p1', audio: true, video: false, sharing: false });
+    expect(body('restart')).toEqual({ from: 'p1', token: 'tok-p1' });
     t.client.stop();
   });
 });

@@ -17,7 +17,13 @@ export class UnknownPeerError extends Error {
 }
 
 export interface RoomStore {
-  join(room: string, name: string): { peerId: string; participants: PeerInfo[]; cursor: number; gen: number };
+  /** `token` é segredo do participante: só volta aqui, nunca em participants nem em eventos. */
+  join(
+    room: string,
+    name: string,
+  ): { peerId: string; token: string; participants: PeerInfo[]; cursor: number; gen: number };
+  /** Lança UnknownPeerError se sala/peer não existirem ou o token não bater. */
+  authenticate(room: string, peerId: string, token: string): void;
   events(room: string, peerId: string, since: number): { events: RoomEvent[]; cursor: number };
   signal(room: string, from: string, to: string, data: SignalData): void;
   chat(room: string, from: string, text: string): void;

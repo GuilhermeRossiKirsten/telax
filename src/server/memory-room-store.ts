@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
 import {
   MAX_EVENTS,
@@ -9,7 +9,7 @@ import {
   type RoomStore,
 } from './room-store';
 
-type Peer = PeerInfo & { lastSeen: number };
+type Peer = PeerInfo & { lastSeen: number; token: string };
 
 type Room = {
   peers: Map<string, Peer>;
@@ -18,8 +18,14 @@ type Room = {
   gen: number;
 };
 
-function toInfo({ lastSeen: _lastSeen, ...info }: Peer): PeerInfo {
+function toInfo({ lastSeen: _lastSeen, token: _token, ...info }: Peer): PeerInfo {
   return info;
+}
+
+function sameToken(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 export class MemoryRoomStore implements RoomStore {
@@ -40,15 +46,23 @@ export class MemoryRoomStore implements RoomStore {
       audio: true,
       video: true,
       sharing: false,
+      token: randomUUID(),
     };
     r.peers.set(peer.id, peer);
     this.emit(r, 'join', peer.id, toInfo(peer));
     return {
       peerId: peer.id,
+      token: peer.token,
       participants: [...r.peers.values()].map(toInfo),
       cursor: r.seq,
       gen: r.gen,
     };
+  }
+
+  authenticate(room: string, peerId: string, token: string) {
+    this.sweep();
+    const peer = this.rooms.get(room)?.peers.get(peerId);
+    if (!peer || !sameToken(peer.token, token)) throw new UnknownPeerError();
   }
 
   events(room: string, peerId: string, since: number) {
@@ -65,7 +79,8 @@ export class MemoryRoomStore implements RoomStore {
 
   signal(room: string, from: string, to: string, data: SignalData) {
     const r = this.requirePeer(room, from);
-    if (!r.peers.has(to)) return;
+    // Cliente legítimo nunca está à frente da sala; aceitar deixaria alguém arrastar todos para um gen enorme.
+    if (!r.peers.has(to) || data.gen > r.gen) return;
     this.emit(r, 'signal', from, data, to);
   }
 

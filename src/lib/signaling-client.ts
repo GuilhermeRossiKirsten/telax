@@ -31,6 +31,8 @@ export function createSignalingClient(opts: Options) {
   const base = `/api/rooms/${encodeURIComponent(opts.room)}`;
 
   let peerId: string | null = null;
+  /** Segredo devolvido pelo join; autentica todo POST e o poll. Nunca sai deste módulo. */
+  let token = '';
   let cursor = 0;
   let failures = 0;
   let hasJoined = false;
@@ -55,12 +57,13 @@ export function createSignalingClient(opts: Options) {
       return false;
     }
     if (!res.ok) throw new Error(`join ${res.status}`);
-    const body = (await res.json()) as JoinResult & { cursor: number };
+    const body = (await res.json()) as JoinResult & { cursor: number; token: string };
     if (stopped) {
-      sendLeave(body.peerId);
+      sendLeave(body.peerId, body.token);
       return true;
     }
     peerId = body.peerId;
+    token = body.token;
     cursor = body.cursor;
     const isRejoin = hasJoined;
     hasJoined = true;
@@ -74,7 +77,7 @@ export function createSignalingClient(opts: Options) {
   }
 
   async function poll(): Promise<boolean> {
-    const url = `${base}/events?peerId=${encodeURIComponent(peerId!)}&since=${cursor}`;
+    const url = `${base}/events?peerId=${encodeURIComponent(peerId!)}&token=${encodeURIComponent(token)}&since=${cursor}`;
     const res = await doFetch(url, { signal: abort.signal });
     if (stopped) return true;
     if (res.status === 410) {
@@ -93,8 +96,10 @@ export function createSignalingClient(opts: Options) {
     return true;
   }
 
-  function sendLeave(id: string) {
-    doFetch(`${base}/leave`, { method: 'POST', body: JSON.stringify({ peerId: id }), keepalive: true }).catch(() => {});
+  function sendLeave(id: string, tok: string) {
+    doFetch(`${base}/leave`, { method: 'POST', body: JSON.stringify({ peerId: id, token: tok }), keepalive: true }).catch(
+      () => {},
+    );
   }
 
   function schedule() {
@@ -122,7 +127,7 @@ export function createSignalingClient(opts: Options) {
 
   async function post(path: string, body: Record<string, unknown>): Promise<Response> {
     if (!peerId) throw new Error('not joined');
-    return doFetch(`${base}/${path}`, { method: 'POST', body: JSON.stringify({ from: peerId, ...body }) });
+    return doFetch(`${base}/${path}`, { method: 'POST', body: JSON.stringify({ from: peerId, token, ...body }) });
   }
 
   return {
@@ -158,7 +163,7 @@ export function createSignalingClient(opts: Options) {
 
     /** Avisa o servidor que saímos; usa keepalive para sobreviver ao fechamento da aba. */
     leave() {
-      if (peerId) sendLeave(peerId);
+      if (peerId) sendLeave(peerId, token);
     },
   };
 }

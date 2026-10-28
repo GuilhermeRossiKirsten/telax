@@ -8,10 +8,13 @@ export async function GET(req: Request, ctx: RoomContext): Promise<Response> {
   const room = normalizeRoom((await ctx.params).room);
   const url = new URL(req.url);
   const peerId = url.searchParams.get('peerId');
+  const token = url.searchParams.get('token');
   const since = Number(url.searchParams.get('since') ?? 0);
-  if (!room || !peerId) return invalid();
+  if (!room || !peerId || !token) return invalid();
   try {
-    return json(getStore().events(room, peerId, Number.isFinite(since) && since > 0 ? since : 0));
+    const store = getStore();
+    store.authenticate(room, peerId, token);
+    return json(store.events(room, peerId, Number.isFinite(since) && since > 0 ? since : 0));
   } catch (e) {
     return storeErrorResponse(e);
   }

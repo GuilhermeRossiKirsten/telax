@@ -148,7 +148,7 @@ describe('criação do par', () => {
     const camera = track('video');
     manager.setLocalTracks({ audio, camera, screen: null });
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     const tx = FakePC.all[0].transceivers;
     expect(tx).toHaveLength(3);
     expect(tx.map((t) => t.direction)).toEqual(['sendrecv', 'sendrecv', 'sendrecv']);
@@ -178,7 +178,7 @@ describe('criação do par', () => {
     await flush();
     expect(offers()).toHaveLength(0);
     expect(FakePC.all[0].ondatachannel).not.toBeNull();
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     expect(FakePC.all[0].remoteDescription).toEqual({ type: 'offer', sdp: 'o' });
     expect(signals.at(-1)).toMatchObject({ to: 'a', data: { gen: 0, kind: 'answer', sdp: 'answer-0' } });
     manager.close();
@@ -198,10 +198,10 @@ describe('criação do par', () => {
   });
 
   it('o offerer aplica a answer recebida', async () => {
-    const { manager } = setup('a');
+    const { manager, offers } = setup('a');
     manager.addPeer('b');
     await flush();
-    await manager.handleSignal('b', { gen: 0, kind: 'answer', sdp: 'ans' });
+    await manager.handleSignal('b', { gen: 0, kind: 'answer', sid: offers().at(-1)!.data.sid, sdp: 'ans' });
     expect(FakePC.all[0].remoteDescription).toEqual({ type: 'answer', sdp: 'ans' });
     manager.close();
   });
@@ -211,7 +211,7 @@ describe('sinais', () => {
   it('descarta sinal de gen menor sem tocar no PC', async () => {
     const { manager } = setup('b', 2);
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 1, kind: 'offer', sdp: 'velho' });
+    await manager.handleSignal('a', { gen: 1, kind: 'offer', sid: 1, sdp: 'velho' });
     expect(FakePC.all[0].remoteDescription).toBeNull();
     manager.close();
   });
@@ -219,9 +219,9 @@ describe('sinais', () => {
   it('candidato que chega antes da offer fica em fila e é aplicado depois', async () => {
     const { manager } = setup('b');
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 0, kind: 'candidate', candidate: { candidate: 'cedo' } });
+    await manager.handleSignal('a', { gen: 0, kind: 'candidate', sid: 1, candidate: { candidate: 'cedo' } });
     expect(FakePC.all[0].candidates).toHaveLength(0);
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     expect(FakePC.all[0].candidates).toEqual([{ candidate: 'cedo' }]);
     manager.close();
   });
@@ -229,7 +229,7 @@ describe('sinais', () => {
   it('gen futuro adota o gen e recria os pares', async () => {
     const { manager } = setup('b');
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 3, kind: 'offer', sdp: 'novo' });
+    await manager.handleSignal('a', { gen: 3, kind: 'offer', sid: 1, sdp: 'novo' });
     expect(FakePC.all[0].closed).toBe(true);
     expect(FakePC.all.at(-1)!.remoteDescription).toEqual({ type: 'offer', sdp: 'novo' });
     manager.close();
@@ -238,8 +238,8 @@ describe('sinais', () => {
   it('quem responde recria o PC a cada nova offer (sessão nova)', async () => {
     const { manager, signals } = setup('b');
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o1' });
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o2' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o1' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 2, sdp: 'o2' });
     expect(FakePC.all).toHaveLength(2);
     expect(FakePC.all[0].closed).toBe(true);
     expect(FakePC.all[1].remoteDescription).toEqual({ type: 'offer', sdp: 'o2' });
@@ -249,8 +249,95 @@ describe('sinais', () => {
 
   it('sinal de peer desconhecido cria o par', async () => {
     const { manager } = setup('b');
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     expect(FakePC.all).toHaveLength(1);
+    manager.close();
+  });
+});
+
+describe('id de sessão (sid)', () => {
+  it('offerer reabriu: answer com o sid antigo é ignorada, com o sid novo é aplicada', async () => {
+    const { manager, offers } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    const oldSid = offers()[0].data.sid;
+    // o answerer pediu reset: o offerer recria e reoferta (mesmo gen)
+    await manager.handleSignal('b', { gen: 0, kind: 'reset' });
+    await flush();
+    expect(offers()).toHaveLength(2);
+    const newSid = offers()[1].data.sid;
+    await manager.handleSignal('b', { gen: 0, kind: 'answer', sid: oldSid, sdp: 'da-sessao-velha' });
+    expect(FakePC.all[1].remoteDescription).toBeNull();
+    await manager.handleSignal('b', { gen: 0, kind: 'answer', sid: newSid, sdp: 'da-sessao-nova' });
+    expect(FakePC.all[1].remoteDescription).toEqual({ type: 'answer', sdp: 'da-sessao-nova' });
+    manager.close();
+  });
+
+  it('candidato com sid diferente é descartado; com sid igual é aplicado', async () => {
+    const { manager, offers } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    const sid = offers()[0].data.sid!;
+    await manager.handleSignal('b', { gen: 0, kind: 'answer', sid, sdp: 'ans' });
+    await manager.handleSignal('b', { gen: 0, kind: 'candidate', sid: sid + 1, candidate: { candidate: 'outro' } });
+    await manager.handleSignal('b', { gen: 0, kind: 'candidate', candidate: { candidate: 'sem-sid' } });
+    expect(FakePC.all[0].candidates).toHaveLength(0);
+    await manager.handleSignal('b', { gen: 0, kind: 'candidate', sid, candidate: { candidate: 'meu' } });
+    expect(FakePC.all[0].candidates).toEqual([{ candidate: 'meu' }]);
+    manager.close();
+  });
+
+  it('quem responde ecoa o sid da offer na answer e nos candidatos locais', async () => {
+    const { manager, signals } = setup('b');
+    manager.addPeer('a');
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 42, sdp: 'o' });
+    expect(signals.at(-1)!.data).toMatchObject({ kind: 'answer', sid: 42 });
+    FakePC.all[0].onicecandidate?.({ candidate: { toJSON: () => ({ candidate: 'c1' }) } });
+    await flush();
+    expect(signals.at(-1)!.data).toMatchObject({ kind: 'candidate', sid: 42, candidate: { candidate: 'c1' } });
+    manager.close();
+  });
+
+  it('quem responde ignora offer sem sid', async () => {
+    const { manager, signals } = setup('b');
+    manager.addPeer('a');
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    expect(FakePC.all[0].remoteDescription).toBeNull();
+    expect(signals).toHaveLength(0);
+    manager.close();
+  });
+
+  it('candidato que chega antes da offer só é aplicado se o sid coincidir com o da offer', async () => {
+    const { manager } = setup('b');
+    manager.addPeer('a');
+    await manager.handleSignal('a', { gen: 0, kind: 'candidate', sid: 5, candidate: { candidate: 'velho' } });
+    await manager.handleSignal('a', { gen: 0, kind: 'candidate', sid: 6, candidate: { candidate: 'certo' } });
+    await manager.handleSignal('a', { gen: 0, kind: 'candidate', candidate: { candidate: 'sem-sid' } });
+    expect(FakePC.all[0].candidates).toHaveLength(0);
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 6, sdp: 'o' });
+    expect(FakePC.all[0].candidates).toEqual([{ candidate: 'certo' }]);
+    manager.close();
+  });
+
+  it('offerer: offer e candidatos levam o sid do PC corrente; PCs consecutivos têm sid diferentes', async () => {
+    const { manager, signals, offers } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    FakePC.all[0].onicecandidate?.({ candidate: { toJSON: () => ({ candidate: 'c0' }) } });
+    await flush();
+    const sid0 = offers()[0].data.sid;
+    expect(typeof sid0).toBe('number');
+    expect(sid0).toBeGreaterThan(0);
+    expect(signals.at(-1)!.data).toMatchObject({ kind: 'candidate', sid: sid0 });
+
+    await manager.handleSignal('b', { gen: 0, kind: 'reset' });
+    await flush();
+    FakePC.all[1].onicecandidate?.({ candidate: { toJSON: () => ({ candidate: 'c1' }) } });
+    await flush();
+    const sid1 = offers()[1].data.sid;
+    expect(typeof sid1).toBe('number');
+    expect(sid1).not.toBe(sid0);
+    expect(signals.at(-1)!.data).toMatchObject({ kind: 'candidate', sid: sid1 });
     manager.close();
   });
 });
@@ -284,7 +371,7 @@ describe('mídia local e remota', () => {
   it('quem responde identifica câmera e tela pela ordem das m-lines da offer', async () => {
     const { manager, remote } = setup('b');
     manager.addPeer('a');
-    await manager.handleSignal('a', { gen: 0, kind: 'offer', sdp: 'o' });
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     const pc = FakePC.all[0];
     const cam = track('video');
     const scr = track('video');
@@ -354,9 +441,9 @@ describe('reinício global', () => {
     await flush();
     expect(offers().filter((o) => o.data.gen === 1)).toHaveLength(0);
     expect(offers().at(-1)!.data.gen).toBe(2);
-    await manager.handleSignal('b', { gen: 1, kind: 'answer', sdp: 'velha' });
+    await manager.handleSignal('b', { gen: 1, kind: 'answer', sid: offers().at(-1)!.data.sid, sdp: 'velha' });
     expect(FakePC.all.at(-1)!.remoteDescription).toBeNull();
-    await manager.handleSignal('b', { gen: 2, kind: 'answer', sdp: 'nova' });
+    await manager.handleSignal('b', { gen: 2, kind: 'answer', sid: offers().at(-1)!.data.sid, sdp: 'nova' });
     expect(FakePC.all.at(-1)!.remoteDescription).toEqual({ type: 'answer', sdp: 'nova' });
     manager.restartAll(2); // repetido: ignorado
     expect(FakePC.all).toHaveLength(3);
@@ -441,6 +528,22 @@ describe('watchdog de sessão', () => {
     expect(FakePC.all[0].closed).toBe(true);
     expect(offers()).toHaveLength(2);
     expect(offers().at(-1)!.data.sdp).toBe('offer-1');
+    manager.close();
+  });
+
+  it('offerer que ainda espera a vez na fila não estoura o watchdog antes de enviar a offer', async () => {
+    const { manager, states, offers } = setup('a');
+    for (const id of ['b', 'c', 'd']) manager.addPeer(id); // fila de 2: b e c ofertam agora, d espera
+    await flush();
+    expect(offers().map((o) => o.to)).toEqual(['b', 'c']);
+    await vi.advanceTimersByTimeAsync(8000); // as vagas de b e c expiram e d finalmente oferta
+    await flush();
+    expect(offers().map((o) => o.to)).toContain('d');
+    await vi.advanceTimersByTimeAsync(17_000); // t = 25 s: b e c passaram dos 20 s, d só tem 17 s desde a offer
+    const failed = (id: string) => states.filter(([p, s]) => p === id && s === 'failed').length;
+    expect(failed('b')).toBe(1);
+    expect(failed('c')).toBe(1);
+    expect(failed('d')).toBe(0);
     manager.close();
   });
 
@@ -574,7 +677,7 @@ describe('limpeza', () => {
     const n = signals.length;
     await vi.advanceTimersByTimeAsync(60_000);
     manager.addPeer('d');
-    await manager.handleSignal('c', { gen: 0, kind: 'candidate', candidate: { candidate: 'x' } });
+    await manager.handleSignal('c', { gen: 0, kind: 'candidate', sid: 1, candidate: { candidate: 'x' } });
     await flush();
     expect(FakePC.all).toHaveLength(2);
     expect(signals.length).toBe(n);

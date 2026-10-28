@@ -36,3 +36,11 @@ Final: minor (deferred): #10 trocar grade↔spotlight remonta os <video> (corte 
 Final: minor (deferred): join com status não-ok diferente de 409 mostra "Reconectando" e o status 'error' nunca é usado
 Final: minor (deferred): desligar câmera usa track.enabled (LED aceso), não replaceTrack como a spec sugere — documentado no README
 Final: Ruling: sem teto de número de salas por instância — estado é em memória por decisão do usuário e o teto de corpo + limite por sala já limitam o abuso por requisição — custo se errado: um cliente mal-intencionado cria muitas salas e esgota a memória da instância (documentado no README).
+Final: fixed (1) par preso em Reconectando — watchdog de sessão 20s (agente paralelo, RED observado: 'connecting'≠'failed' etc.) — peer-manager.test 37/37
+Final: fixed (2) answer de sessão antiga no PC novo — sid por sessão (RED: 'expected {type:answer} to be null' ao aplicar answer de sid antigo) — peer-manager.test 37/37
+Final: fixed (ajuste meu sobre o agente) watchdog do offerer arma ao ENVIAR a offer, não ao criar o PC — evita reabrir par que ainda espera a vez na RestartQueue em sala de 8; teste 'offerer que ainda espera a vez…' RED (failed('d') = 1 ≠ 0) → GREEN, peer-manager.test 38/38
+Final: fixed (3) rotas confiam em from/peerId — token por participante (+authenticate, timingSafeEqual), parseSignal (campos conhecidos, sdp≤32KiB, candidate≤2048), gen>sala descartado, corpo≤128KiB (agente paralelo; REDs observados por grupo) — 149/149
+Final: fixed (4, re-grade Minor→Important) câmera acesa em "Sala cheia" — stopAll + flag released (cobre permissão pendente) — E2E '9º participante' RED (tracks vivos: Received false) → GREEN
+Final: E2E reforçado: checa totalVideoFrames crescente além de currentTime (ponto "não consegui julgar" do revisor sobre vídeo após reinício)
+Final: verificação — vitest 149/149; tsc limpo; E2E 2 pessoas 11 cenários x2 = 22 passed; mesh 3 pessoas 5 cenários x2 = 10 passed; nenhuma porta 3100/3200 em uso ao final.
+Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) que não foi criado por mim nem pelos agentes; não toquei no git.

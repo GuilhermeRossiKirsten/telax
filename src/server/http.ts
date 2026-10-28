@@ -11,9 +11,13 @@ export const invalid = () => json({ error: 'invalid' }, 400);
 export const isString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 export const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 
+export const MAX_BODY = 128 * 1024;
+
 async function readBody(req: Request): Promise<Body | null> {
   try {
-    const body: unknown = await req.json();
+    const text = await req.text();
+    if (text.length > MAX_BODY) return null;
+    const body: unknown = JSON.parse(text);
     return body && typeof body === 'object' && !Array.isArray(body) ? (body as Body) : null;
   } catch {
     return null;
@@ -27,14 +31,24 @@ export function storeErrorResponse(e: unknown): Response {
   throw e;
 }
 
-/** POST com corpo JSON: valida sala e corpo, executa o handler e mapeia erros do store. */
-export function postRoute(handler: (store: RoomStore, room: string, body: Body) => Response | Promise<Response>) {
+/**
+ * POST com corpo JSON: valida sala e corpo, executa o handler e mapeia erros do store.
+ * Com `idField`, exige `token` e autentica o peer (body[idField]) antes de tudo; token errado
+ * e peer inexistente dão o mesmo 410 para não revelar qual falhou.
+ */
+export function postRoute(
+  handler: (store: RoomStore, room: string, body: Body) => Response | Promise<Response>,
+  idField?: 'from' | 'peerId',
+) {
   return async (req: Request, ctx: RoomContext): Promise<Response> => {
     const room = normalizeRoom((await ctx.params).room);
     const body = await readBody(req);
     if (!room || !body) return invalid();
+    if (idField && (!isString(body[idField]) || !isString(body.token))) return invalid();
     try {
-      return await handler(getStore(), room, body);
+      const store = getStore();
+      if (idField) store.authenticate(room, body[idField] as string, body.token as string);
+      return await handler(store, room, body);
     } catch (e) {
       return storeErrorResponse(e);
     }

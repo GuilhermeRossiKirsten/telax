@@ -30,6 +30,11 @@ export function RoomView({ room, name }: { room: string; name: string }) {
     if (window.matchMedia('(min-width: 900px)').matches) setPanelOpen(true);
   }, []);
 
+  const { stopAll } = local;
+  useEffect(() => {
+    if (r.status === 'full') stopAll();
+  }, [r.status, stopAll]);
+
   const nameOf = useCallback((id: string) => r.participants.find((p) => p.id === id)?.name ?? 'alguém', [r.participants]);
 
   async function restart() {

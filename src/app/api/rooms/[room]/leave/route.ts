@@ -1,9 +1,8 @@
-import { invalid, isString, json, postRoute } from '@/server/http';
+import { json, postRoute } from '@/server/http';
 
 export const dynamic = 'force-dynamic';
 
 export const POST = postRoute((store, room, body) => {
-  if (!isString(body.peerId)) return invalid();
-  store.leave(room, body.peerId);
+  store.leave(room, body.peerId as string);
   return json({ ok: true });
-});
+}, 'peerId');

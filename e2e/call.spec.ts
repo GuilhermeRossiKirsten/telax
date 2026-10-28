@@ -13,6 +13,20 @@ const TRACK_PCS = () => {
   w.RTCPeerConnection.prototype = Orig.prototype;
 };
 
+/** Só para teste: guarda cada MediaStream pedido ao getUserMedia para conferir depois se os tracks foram parados. */
+const TRACK_MEDIA = () => {
+  const w = window as unknown as { __streams: MediaStream[] };
+  w.__streams = [];
+  const md = navigator.mediaDevices;
+  if (!md?.getUserMedia) return;
+  const original = md.getUserMedia.bind(md);
+  md.getUserMedia = async (constraints) => {
+    const stream = await original(constraints);
+    w.__streams.push(stream);
+    return stream;
+  };
+};
+
 type User = { ctx: BrowserContext; page: Page; errors: string[] };
 
 let seq = 0;
@@ -21,6 +35,7 @@ const uniqueRoom = (label: string) => `e2e-${label}-${Date.now()}-${++seq}`;
 async function newUser(browser: Browser): Promise<User> {
   const ctx = await browser.newContext({ permissions: ['camera', 'microphone'] });
   await ctx.addInitScript(TRACK_PCS);
+  await ctx.addInitScript(TRACK_MEDIA);
   const page = await ctx.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -51,12 +66,15 @@ async function expectConnected(p: Page, other: string) {
   await expect(participants(p).filter({ hasText: other }).locator('.badge')).toHaveText('Conectado');
 }
 
-/** O vídeo remoto tem frames reais e o relógio de reprodução avança. */
+/** O vídeo remoto tem frames reais: o relógio avança E o contador de quadros decodificados cresce. */
 async function expectVideoPlaying(tile: ReturnType<Page['locator']>) {
   const video = tile.locator('video');
+  const frames = () => video.evaluate((v: HTMLVideoElement) => v.getVideoPlaybackQuality().totalVideoFrames);
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
   const t1 = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
+  const f1 = await frames();
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(t1);
+  await expect.poll(frames).toBeGreaterThan(f1);
 }
 
 const pcCount = (p: Page) => p.evaluate(() => (window as unknown as { __pcs: unknown[] }).__pcs.length);
@@ -240,6 +258,15 @@ test('o 9º participante vê "Sala cheia"', async ({ browser, request }) => {
   const u = await newUser(browser);
   await enter(u, room, 'Nono');
   await expect(u.page.locator('p[role="alert"]')).toContainText('Sala cheia');
+  // sem chamada, a câmera/microfone não podem ficar abertos (luz da câmera acesa)
+  await expect
+    .poll(() =>
+      u.page.evaluate(() => {
+        const streams = (window as unknown as { __streams: MediaStream[] }).__streams;
+        return streams.length > 0 && streams.every((s) => s.getTracks().every((t) => t.readyState === 'ended'));
+      }),
+    )
+    .toBe(true);
   await u.ctx.close();
 });
 

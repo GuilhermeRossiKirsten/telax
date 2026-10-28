@@ -1,22 +1,11 @@
-import type { SignalData } from '@/lib/types';
 import { invalid, isString, json, postRoute } from '@/server/http';
+import { parseSignal } from '@/server/signal-validation';
 
 export const dynamic = 'force-dynamic';
 
-const KINDS = ['offer', 'answer', 'candidate', 'reset'];
-
 export const POST = postRoute((store, room, body) => {
-  const data = body.data as Partial<SignalData> | null;
-  if (
-    !isString(body.from) ||
-    !isString(body.to) ||
-    !data ||
-    typeof data !== 'object' ||
-    typeof data.gen !== 'number' ||
-    !KINDS.includes(data.kind as string)
-  ) {
-    return invalid();
-  }
-  store.signal(room, body.from, body.to, data as SignalData);
+  const data = parseSignal(body.data);
+  if (!isString(body.to) || !data) return invalid();
+  store.signal(room, body.from as string, body.to, data);
   return json({ ok: true });
-});
+}, 'from');

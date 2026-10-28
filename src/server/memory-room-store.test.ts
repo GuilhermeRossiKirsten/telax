@@ -120,6 +120,59 @@ describe('restart e estado', () => {
   });
 });
 
+describe('token e authenticate', () => {
+  it('join devolve um token distinto por peer', () => {
+    const a = store.join('sala', 'Ana');
+    const b = store.join('sala', 'Beto');
+    expect(a.token).toEqual(expect.any(String));
+    expect(a.token.length).toBeGreaterThan(0);
+    expect(a.token).not.toBe(b.token);
+  });
+
+  it('authenticate aceita o token certo', () => {
+    const a = store.join('sala', 'Ana');
+    expect(() => store.authenticate('sala', a.peerId, a.token)).not.toThrow();
+  });
+
+  it('authenticate lança UnknownPeerError com token errado, peer ou sala inexistente', () => {
+    const a = store.join('sala', 'Ana');
+    const b = store.join('sala', 'Beto');
+    expect(() => store.authenticate('sala', a.peerId, b.token)).toThrow(UnknownPeerError);
+    expect(() => store.authenticate('sala', a.peerId, '')).toThrow(UnknownPeerError);
+    expect(() => store.authenticate('sala', 'fantasma', a.token)).toThrow(UnknownPeerError);
+    expect(() => store.authenticate('outra', a.peerId, a.token)).toThrow(UnknownPeerError);
+  });
+
+  it('authenticate varre expirados antes', () => {
+    const a = store.join('sala', 'Ana');
+    now += PEER_TTL_MS + 1;
+    expect(() => store.authenticate('sala', a.peerId, a.token)).toThrow(UnknownPeerError);
+  });
+
+  it('o token não aparece em participants nem em eventos', () => {
+    const a = store.join('sala', 'Ana');
+    const b = store.join('sala', 'Beto');
+    store.chat('sala', b.peerId, 'oi');
+    const dump = JSON.stringify([b.participants, store.events('sala', a.peerId, 0)]);
+    expect(dump).not.toContain(a.token);
+    expect(dump).not.toContain(b.token);
+    expect(b.participants.every((p) => !('token' in p))).toBe(true);
+  });
+});
+
+describe('signal e gen', () => {
+  it('descarta em silêncio sinal com gen maior que o da sala; gen ≤ é entregue', () => {
+    const a = store.join('sala', 'Ana');
+    const b = store.join('sala', 'Beto');
+    store.restart('sala', a.peerId); // gen da sala = 1
+    store.signal('sala', a.peerId, b.peerId, { gen: 2, kind: 'offer', sdp: 'v=0' });
+    store.signal('sala', a.peerId, b.peerId, { gen: 1, kind: 'offer', sdp: 'v=1' });
+    store.signal('sala', a.peerId, b.peerId, { gen: 0, kind: 'offer', sdp: 'v=2' });
+    const sigs = store.events('sala', b.peerId, b.cursor).events.filter((e) => e.type === 'signal');
+    expect(sigs.map((e) => (e.payload as SignalData).sdp)).toEqual(['v=1', 'v=2']);
+  });
+});
+
 describe('log de eventos', () => {
   it('guarda no máximo 500 eventos e since antigo não dá erro', () => {
     const a = store.join('sala', 'Ana');

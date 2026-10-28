@@ -75,6 +75,11 @@ implementado.
   `GET /api/rooms/:sala/events` a cada ~1 s. Offers, answers, candidatos ICE, presença, estado
   (mic/câmera/tela) e chat passam por `/signal`, `/state`, `/chat`. Quem para de consultar por
   15 s é removido da sala.
+- **Token por participante:** o `join` devolve um token secreto, exigido em todas as chamadas
+  seguintes. O `peerId` é público (aparece na lista), então sem o token ninguém consegue ler os
+  sinais de outro, mandar chat em nome dele nem tirá-lo da sala. O `/signal` só aceita campos
+  conhecidos (SDP até 32 KiB, `gen` nunca à frente da sala) e o corpo das requisições é limitado
+  a 128 KiB.
 - **Mesh P2P:** um `RTCPeerConnection` por par de participantes. O menor `peerId` do par é sempre
   quem oferece, o outro só responde, o que elimina ofertas simultâneas conflitantes.
 - **Mídia sem renegociar:** o offerer cria 3 transceivers (áudio, vídeo da câmera, vídeo da tela) e
@@ -85,7 +90,9 @@ implementado.
   renegociações simultâneas. Sinais de geração anterior são descartados.
 - **Reconexão:** par em `failed` é reaberto com backoff (1 s → 30 s); `disconnected` por mais de 5 s é
   reaberto na hora; se o servidor esquecer o participante (`410`), o cliente entra de novo e refaz
-  os pares.
+  os pares. Um par que não chega a `connected` em 20 s (por exemplo, offer perdida numa queda de
+  rede) também é reaberto. Cada sessão de negociação tem um id (`sid`), então respostas e
+  candidatos de uma sessão antiga são descartados e não contaminam a nova.
 - **Arquivos:** enviados em pedaços de 16 KB por um DataChannel P2P (com controle de fluxo), nunca
   passam pelo servidor.
 
@@ -101,9 +108,15 @@ implementado.
   só chegam a quem está conectado no momento do envio. Nada é gravado no servidor.
 - **Desligar a câmera** usa `track.enabled = false` (envia quadros pretos e o LED da câmera
   continua aceso); o compartilhamento de tela não envia áudio.
-- **Sem autenticação:** quem souber o nome da sala entra. Qualquer cliente pode alegar um `peerId`
-  nas rotas de sinalização (não há tokens por participante).
+- **Sem autenticação de sala:** quem souber o nome da sala entra (o token protege um participante
+  dos outros, não a sala de quem chega). Não há senha nem convite.
+- **Sem limite de número de salas por instância:** como tudo é memória, um cliente mal-intencionado
+  pode criar muitas salas e esgotar a memória da instância. As requisições e cada sala têm limites,
+  o total de salas não.
+- **Histórico e MIME:** o tipo (MIME) de um arquivo recebido é o declarado por quem enviou.
 - Sem tratamento de troca de dispositivo (câmera/microfone) durante a chamada.
+- Um erro de join diferente de "sala cheia" (por exemplo, 500 do servidor) aparece como
+  "Reconectando" e o app segue tentando; não há tela de erro dedicada.
 
 ## Testes
 
@@ -116,6 +129,32 @@ npm run test:e2e       # Playwright: sobe build + servidor na porta 3100 e abre 
 Os testes E2E usam Chromium com câmera/microfone falsos (`--use-fake-device-for-media-stream`) e
 contextos de navegador independentes. Eles **não** cobrem: câmeras/microfones reais, Firefox/Safari,
 dispositivos móveis reais, conexão através de TURN real nem redes com NAT restritivo.
+O teste de 3 participantes está em `e2e-mesh/` e roda com `npx playwright test -c playwright.mesh.config.ts`.
+
+### O que foi executado
+
+Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium do Playwright 1.64):
+
+| Verificação | Comando | Resultado |
+|---|---|---|
+| Unidade (store, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 149 passaram, 0 falharam |
+| Tipos | `npx tsc --noEmit` | sem erros |
+| Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
+| E2E, 2 participantes (11 cenários), repetido 2× | `npx playwright test --repeat-each=2` | 22 passaram |
+| E2E, 3 participantes (5 cenários), repetido 2× | `npx playwright test -c playwright.mesh.config.ts --repeat-each=2` | 10 passaram |
+
+O que os E2E de fato verificam: entrada só com sala e nome; dois participantes conectados com
+vídeo cujo contador de quadros decodificados avança e bytes de áudio/vídeo recebidos, com o par
+ICE escolhido entre os dois navegadores (sem relay); mic/câmera refletidos nos outros;
+compartilhamento de tela; chat nos dois sentidos; arquivo de 70 KB íntegro; **reinício global**
+(novas `RTCPeerConnection` nos dois lados, ninguém sai, vídeo volta); saída de participante; recarregar
+a aba; sala com acento no nome; 9º participante ("Sala cheia", com câmera e microfone liberados);
+em 3 pessoas, as 3 conexões do mesh, chat, reinício global feito por uma pessoa e por duas ao mesmo
+tempo, e saída de um participante.
+
+Não foi executado: TURN real, redes com NAT simétrico, Firefox/Safari, câmeras reais, mais de 3
+participantes em paralelo, e deploy real na Vercel (o projeto é um app Next.js padrão, mas não foi
+publicado nem testado lá).
 
 ## Estrutura
 
