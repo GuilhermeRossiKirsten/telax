@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useRef, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import type { ConnState } from '@/lib/peer-manager';
+import { screenLabel, screenSound, screenWord } from '@/lib/screens';
+import type { TileKind } from '@/lib/view-state';
 import { Icon } from './Icon';
 
 export const CONN_LABEL: Record<ConnState | 'self', string> = {
@@ -15,18 +17,21 @@ export const CONN_LABEL: Record<ConnState | 'self', string> = {
 type Sound = { muted: boolean; volume: number };
 
 type Props = {
+  /** `person`: avatar/câmera (e a tela de menor slot no lugar deles); `screen`: tile extra de uma tela adicional */
+  kind: TileKind;
   /** nome da pessoa (sem "(você)"); `label` é o rótulo exibido */
   name: string;
   label: string;
   isSelf?: boolean;
   conn: ConnState | 'self';
   camera: MediaStream | null;
+  /** a tela que este tile mostra (própria ou de outra pessoa) */
   screen: MediaStream | null;
+  /** slot da tela deste tile; null se a pessoa não compartilha */
+  slot: number | null;
   audioOn?: boolean;
   videoOn?: boolean;
-  /** a pessoa está compartilhando a tela */
-  sharing?: boolean;
-  /** o tile está mostrando a tela no lugar do avatar/câmera */
+  /** o tile está mostrando a tela (no lugar do avatar/câmera) */
   showScreen?: boolean;
   selected?: boolean;
   /** voz e som da aba: silenciar e volume só neste navegador (o som toca no RemoteAudio) */
@@ -38,6 +43,8 @@ type Props = {
   onTabVolume?(v: number): void;
   onOpenScreen?(): void;
   onCloseScreen?(): void;
+  /** parar de compartilhar ESTA tela (só no tile da própria pessoa) */
+  onStopShare?(): void;
   /** esconder o tile (a faixa "Fechadas" traz de volta) */
   onHide?(): void;
   onToggleSelect?(): void;
@@ -45,7 +52,16 @@ type Props = {
 
 const hasVideoTrack = (s: MediaStream | null) => !!s && s.getVideoTracks().length > 0;
 
-function SoundControl(p: { muteLabel: string; unmuteLabel: string; volumeLabel: string; title: string; sound: Sound; onToggle?(): void; onVolume?(v: number): void; stop(fn?: () => void): (e: MouseEvent) => void }) {
+function SoundControl(p: {
+  muteLabel: string;
+  unmuteLabel: string;
+  volumeLabel: string;
+  title: string;
+  sound: Sound;
+  onToggle?(): void;
+  onVolume?(v: number): void;
+  stop(fn?: () => void): (e: MouseEvent) => void;
+}) {
   const { sound } = p;
   return (
     <div className="tile-volume">
@@ -67,18 +83,19 @@ function SoundControl(p: { muteLabel: string; unmuteLabel: string; volumeLabel: 
 
 /**
  * Um tile por participante. Compartilhando, a tela substitui o avatar/câmera neste mesmo tile (mesmo <video>);
- * se a câmera está ligada, ela passa a um quadro pequeno no canto.
+ * se a câmera está ligada, ela passa a um quadro pequeno no canto. Telas adicionais têm tiles próprios.
  */
 export function VideoTile({
+  kind,
   name,
   label,
   isSelf = false,
   conn,
   camera,
   screen,
+  slot,
   audioOn = true,
   videoOn = true,
-  sharing = false,
   showScreen = false,
   selected = false,
   voice,
@@ -89,15 +106,20 @@ export function VideoTile({
   onTabVolume,
   onOpenScreen,
   onCloseScreen,
+  onStopShare,
   onHide,
   onToggleSelect,
 }: Props) {
+  const figureRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLVideoElement>(null);
   const insetRef = useRef<HTMLVideoElement>(null);
-  const cameraLive = hasVideoTrack(camera) && videoOn;
-  const main = showScreen ? screen : camera;
+  const isPerson = kind === 'person';
+  const cameraLive = isPerson && hasVideoTrack(camera) && videoOn;
+  const main = showScreen ? screen : isPerson ? camera : null;
   const hasMain = showScreen ? hasVideoTrack(screen) : cameraLive;
-  const showInset = showScreen && cameraLive;
+  const showInset = isPerson && showScreen && cameraLive;
+  const sharing = slot !== null;
+  const word = screenWord(slot ?? 0);
 
   // um único <video> troca de fonte (câmera ↔ tela): não nasce outro elemento nem outro tile
   useEffect(() => {
@@ -120,16 +142,35 @@ export function VideoTile({
     };
   }, [camera, showInset]);
 
+  // tela cheia de verdade (API do navegador) neste mesmo tile; sair por Esc também é refletido aqui
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    const sync = () => setFullscreen(document.fullscreenElement === figureRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+  const toggleFullscreen = () => {
+    const el = figureRef.current;
+    if (!el) return;
+    if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => {});
+    else void el.requestFullscreen?.().catch(() => {}); // sem suporte ou negado: o botão só não faz nada
+  };
+
   const stop = (fn?: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     fn?.();
   };
 
+  const caption = showScreen ? screenLabel(name, slot ?? 0) : label;
+
   return (
     <figure
+      ref={figureRef}
       className="tile"
       data-conn={conn}
       data-testid="tile"
+      data-kind={kind}
+      data-slot={slot ?? undefined}
       data-selected={selected ? 'true' : undefined}
       data-sharing={sharing ? 'true' : undefined}
       data-showing={showScreen ? 'screen' : 'camera'}
@@ -140,23 +181,28 @@ export function VideoTile({
         autoPlay
         playsInline
         muted
-        className={isSelf && !showScreen ? 'mirrored' : undefined}
+        className={isSelf && isPerson && !showScreen ? 'mirrored' : undefined}
         style={{ visibility: hasMain ? 'visible' : 'hidden' }}
       />
       {showInset && <video ref={insetRef} className={`tile-inset ${isSelf ? 'mirrored' : ''}`} autoPlay playsInline muted />}
-      {!hasMain && !showScreen && (
+      {!hasMain && !showScreen && isPerson && (
         <div className="avatar" aria-hidden="true">
           {name.slice(0, 1).toUpperCase()}
         </div>
       )}
+      {!hasMain && !showScreen && !isPerson && (
+        <div className="tile-placeholder" aria-hidden="true">
+          <Icon name="screen" size={40} />
+        </div>
+      )}
       {sharing && !showScreen && !isSelf && (
-        <button className="tile-offer primary" aria-label={`Ver tela de ${name}`} onClick={stop(onOpenScreen)}>
-          <Icon name="screen" size={16} /> Ver tela
+        <button className="tile-offer primary" aria-label={`Ver ${word} de ${name}`} onClick={stop(onOpenScreen)}>
+          <Icon name="screen" size={16} /> Ver {word}
         </button>
       )}
       {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona */}
       <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
-        {!isSelf && (
+        {!isSelf && isPerson && (
           <SoundControl
             muteLabel={`Silenciar ${name}`}
             unmuteLabel={`Ativar som de ${name}`}
@@ -170,9 +216,9 @@ export function VideoTile({
         )}
         {!isSelf && showScreen && (
           <SoundControl
-            muteLabel={`Silenciar som da aba de ${name}`}
-            unmuteLabel={`Ativar som da aba de ${name}`}
-            volumeLabel={`Volume da aba de ${name}`}
+            muteLabel={`Silenciar ${screenSound(name, slot ?? 0)}`}
+            unmuteLabel={`Ativar ${screenSound(name, slot ?? 0)}`}
+            volumeLabel={`Volume ${screenSound(name, slot ?? 0).replace(/^som /, '')}`}
             title={tab.muted ? 'Ouvir o som da aba (só para você)' : 'Silenciar o som da aba (só para você)'}
             sound={tab}
             onToggle={onToggleTab}
@@ -187,10 +233,23 @@ export function VideoTile({
           title={selected ? 'Voltar ao layout normal' : 'Destacar: fica grande e os outros ficam embaixo'}
           onClick={stop(onToggleSelect)}
         >
-          <Icon name={selected ? 'minimize' : 'maximize'} size={16} />
+          <Icon name="pin" size={16} />
         </button>
+        <button
+          className="tile-btn"
+          aria-label={fullscreen ? `Sair da tela cheia ${label}` : `Tela cheia ${label}`}
+          title={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+          onClick={stop(toggleFullscreen)}
+        >
+          <Icon name={fullscreen ? 'minimize' : 'maximize'} size={16} />
+        </button>
+        {isSelf && showScreen && (
+          <button className="tile-btn" aria-label={`Parar de compartilhar ${word}`} title="Parar de compartilhar esta tela" onClick={stop(onStopShare)}>
+            <Icon name="screenOff" size={16} />
+          </button>
+        )}
         {showScreen && !isSelf ? (
-          <button className="tile-btn" aria-label={`Fechar tela de ${name}`} title="Parar de ver a tela (só para você)" onClick={stop(onCloseScreen)}>
+          <button className="tile-btn" aria-label={`Fechar ${word} de ${name}`} title="Parar de ver a tela (só para você)" onClick={stop(onCloseScreen)}>
             <Icon name="close" size={16} />
           </button>
         ) : (
@@ -200,13 +259,13 @@ export function VideoTile({
         )}
       </div>
       <figcaption>
-        <span className="tile-name">{showScreen ? `Tela de ${name}` : label}</span>
-        {!audioOn && (
+        <span className="tile-name">{caption}</span>
+        {isPerson && !audioOn && (
           <span className="tile-flag" title="Microfone desligado">
             <Icon name="micOff" size={14} />
           </span>
         )}
-        {voice.muted && !isSelf && (
+        {isPerson && voice.muted && !isSelf && (
           <span className="tile-flag tile-flag-local" title="Você silenciou esta pessoa">
             <Icon name="volumeOff" size={14} />
           </span>
@@ -216,7 +275,7 @@ export function VideoTile({
             <Icon name="volumeOff" size={14} />
           </span>
         )}
-        {!isSelf && (
+        {!isSelf && isPerson && (
           <span className={`badge badge-${conn}`} data-testid="conn-badge">
             {CONN_LABEL[conn]}
           </span>

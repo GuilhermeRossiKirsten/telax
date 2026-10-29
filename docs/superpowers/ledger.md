@@ -89,3 +89,15 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Ruling: fechar a tela também para o som da aba (stream do `<audio>` vira null); o pedido era "fechar a transmissão para parar de visualizar".
 - Ruling: "Fechar" no tile que mostra a tela de outra pessoa fecha a tela; em qualquer outro caso esconde o tile. O próprio tile compartilhando só pode ser escondido.
 - Pendentes não executados (só pelo relato do revisor, nunca direto do usuário): prévia de arquivos no chat; commit e push.
+
+## Tela cheia, formato original, várias telas, volume no painel, scroll das Configurações
+
+- Botão de maximizar = tela cheia de verdade (`requestFullscreen` no próprio `<figure>`); o destaque virou botão de fixar (+ clique no corpo). Teste e2e visto falhar antes (botão inexistente) e passar depois (o tile ocupa a janela toda; o som segue o mesmo).
+- Bug de regressão achado pelo usuário: ao unificar os tiles, a regra `contain` da tela se perdeu (o vídeo usava `cover` e esticava/cortava). Corrigido: `contain` quando mostra tela ou está selecionado. e2e `aspect.spec.ts` visto falhar sem a regra (`cover`) e passar com ela.
+- Várias telas (até 3): 3 forks em paralelo (servidor: `screenSlots` máscara de bits em types/validation/stores/rotas, 120 testes; PeerManager: 8 transceivers, 58 testes; e2e: 9 testes novos escritos a partir do contrato em `docs/.../design.md`) enquanto eu fiz captura, estado, tiles, barra e painel. Integração: o e2e novo achou um erro de TESTE (`2` não casa em "Ana2"), corrigido para checar o contador.
+- Ruling: telas extras viram tiles próprios (a primeira ocupa o tile da pessoa) — o pedido anterior ("sem gerar outro componente") valia para uma tela; com várias não há avatar suficiente. Custo se errado: trocar por um seletor dentro do tile (perde ver duas lado a lado).
+- Ruling: volume da pessoa também na aba Participantes (mesmo estado do overlay), sem remover o do overlay — o pedido dizia "pode ficar".
+- Scroll das Configurações: o cartão inteiro rolava (título, cantos e "Fechar" iam embora). Agora cabeçalho e rodapé fixos, só o miolo rola, barra fina no tema; teste em janela baixa visto falhar antes (`.sd-body` inexistente). Tropeço meu: o script de reestruturação do CSS apagou regras que estavam depois de `.sd-actions` (subtítulo/seção); só notei no print — os testes não olham estilo. Restauradas e conferidas por print.
+- Verificação final: tsc limpo; vitest 275 passed / 4 skipped; e2e 43/43; mesh 5/5; npm audit 0.
+- Não verificado: Mongo com `screenSlots` (store alterado só por leitura, teste pulado sem MONGODB_TEST_URI); 8 m-lines no SDP real do Chrome além do Chromium de teste; captura real de várias abas; Atlas/Vercel.
+- Ainda pendentes (só pelo relato do revisor, não do usuário): prévia de arquivos no chat; commit e push.

@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, Participant, RoomFile } from '@/hooks/use-room';
+import type { ViewApi } from '@/hooks/use-view-state';
+import { slotsFromMask } from '@/lib/screens';
+import { applyVolume, voiceKey, volumeOf } from '@/lib/view-state';
 import { Icon } from './Icon';
 import { CONN_LABEL } from './VideoTile';
 
@@ -15,6 +18,8 @@ const TABS: Array<[Tab, string]> = [
 type Props = {
   tab: Tab;
   onTab(t: Tab): void;
+  view: ViewApi['view'];
+  onView: ViewApi['dispatch'];
   participants: Participant[];
   messages: ChatMessage[];
   files: RoomFile[];
@@ -39,7 +44,7 @@ export function SidePanel(p: Props) {
         ))}
       </div>
       <div className="panel-body" role="tabpanel">
-        {p.tab === 'participants' && <ParticipantList participants={p.participants} />}
+        {p.tab === 'participants' && <ParticipantList participants={p.participants} view={p.view} onView={p.onView} />}
         {p.tab === 'chat' && <Chat messages={p.messages} selfId={p.selfId} onSend={p.onSendChat} />}
         {p.tab === 'files' && <Files files={p.files} nameOf={p.nameOf} onSend={p.onSendFile} />}
       </div>
@@ -47,7 +52,7 @@ export function SidePanel(p: Props) {
   );
 }
 
-function ParticipantList({ participants }: { participants: Participant[] }) {
+function ParticipantList({ participants, view, onView }: { participants: Participant[]; view: ViewApi['view']; onView: ViewApi['dispatch'] }) {
   return (
     <ul className="list" data-testid="participants">
       {participants.map((m) => (
@@ -61,7 +66,38 @@ function ParticipantList({ participants }: { participants: Participant[] }) {
           </span>
           {!m.audio && <Icon name="micOff" size={14} />}
           {!m.video && <Icon name="videoOff" size={14} />}
-          {m.sharing && <Icon name="screen" size={14} />}
+          {m.sharing && (
+            <span className="screen-count" title={`Compartilhando ${slotsFromMask(m.screenSlots).length || 1} tela(s)`}>
+              <Icon name="screen" size={14} />
+              {slotsFromMask(m.screenSlots).length > 1 && <span>{slotsFromMask(m.screenSlots).length}</span>}
+            </span>
+          )}
+          {m.conn !== 'self' && (() => {
+            const key = voiceKey(m.id);
+            const muted = view.muted.includes(key);
+            const volume = volumeOf(view, key);
+            return (
+              <span className="row-volume">
+                <button
+                  className="icon-mini"
+                  aria-label={muted ? `Ativar som de ${m.name}` : `Silenciar ${m.name}`}
+                  title={muted ? 'Voltar a ouvir (só para você)' : 'Silenciar (só para você)'}
+                  onClick={() => onView({ type: 'toggleMuted', key })}
+                >
+                  <Icon name={muted || volume === 0 ? 'volumeOff' : 'volume'} size={14} />
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={Math.round((muted ? 0 : volume) * 100)}
+                  aria-label={`Volume de ${m.name}`}
+                  onChange={(e) => applyVolume(view, onView, key, Number(e.target.value) / 100)}
+                />
+              </span>
+            );
+          })()}
           <span className={`badge badge-${m.conn}`}>{CONN_LABEL[m.conn]}</span>
         </li>
       ))}

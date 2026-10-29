@@ -209,6 +209,35 @@ describe('signal, chat, state, restart, leave', () => {
     expect(ok.status).toBe(200);
   });
 
+  it('state aceita screenSlots e deriva sharing; inválido → 400 e nada muda', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room)).body;
+    const b = (await doJoin(room)).body;
+    const send = (extra: Record<string, unknown>) =>
+      state(post('state', { from: a.peerId, token: a.token, audio: true, video: true, ...extra }), ctx(room));
+    expect((await send({ screenSlots: 3 })).status).toBe(200);
+    for (const bad of [8, -1, 1.5, '3', Number.NaN, null]) {
+      expect((await send({ sharing: false, screenSlots: bad })).status).toBe(400);
+      expect((await send({ screenSlots: bad })).status).toBe(400);
+    }
+    expect((await send({})).status).toBe(400); // nem sharing nem screenSlots
+    expect((await send({ sharing: 'sim', screenSlots: 1 })).status).toBe(400);
+    const evs = (await poll(room, b.peerId, b.cursor, b.token)).body.events as Ev[];
+    const states = evs.filter((e) => e.type === 'state');
+    expect(states).toHaveLength(1);
+    expect(states[0].payload).toEqual({ audio: true, video: true, sharing: true, screenSlots: 3 });
+  });
+
+  it('state só com sharing continua valendo (compatibilidade): vira screenSlots 1', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room)).body;
+    const b = (await doJoin(room)).body;
+    const ok = await state(post('state', { from: a.peerId, token: a.token, audio: true, video: true, sharing: true }), ctx(room));
+    expect(ok.status).toBe(200);
+    const evs = (await poll(room, b.peerId, b.cursor, b.token)).body.events as Ev[];
+    expect(evs.find((e) => e.type === 'state')?.payload).toMatchObject({ sharing: true, screenSlots: 1 });
+  });
+
   it('restart devolve gen crescente', async () => {
     const room = newRoom();
     const a = (await doJoin(room)).body;

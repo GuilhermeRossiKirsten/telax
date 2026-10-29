@@ -754,3 +754,75 @@ button.ghost:hover {
   padding: 5px 10px;
   font-size: 12px;
 }
+
+/* tela cheia do tile: ocupa a janela toda; a imagem inteira, sem cortes */
+.tile:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+}
+.tile:fullscreen video:not(.tile-inset) {
+  object-fit: contain;
+}
+.tile:fullscreen .tile-actions {
+  padding: 16px;
+}
+
+/* a tela aparece inteira, no formato original da transmissão (sem esticar nem cortar); a câmera na grade continua preenchendo */
+.tile[data-showing='screen'] video:not(.tile-inset),
+.tile[data-selected='true'] video:not(.tile-inset) {
+  object-fit: contain;
+}
+.tile-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+/* volume de cada pessoa na aba Participantes */
+.row-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.row-volume input[type='range'] {
+  width: 72px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.screen-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+}
+.icon-mini {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+}
+.icon-mini:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* barras de rolagem finas e escuras em todo o app (a barra padrão do sistema é larga e clara) */
+html {
+  color-scheme: dark;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 232, 227, 0.28) transparent;
+}

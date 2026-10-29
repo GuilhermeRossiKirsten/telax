@@ -12,10 +12,17 @@ intermedeia a sinalização, a presença e o chat.
   (nada de um segundo componente). Para quem vê, a tela começa **fechada** (o tile mostra o avatar e o botão
   "Ver tela"); ao abrir, a tela ocupa o tile e o **som da aba continua mutado** até você ativar. Se a câmera de quem
   compartilha está ligada, ela vira um quadro pequeno no canto do mesmo tile
+- **Várias telas por pessoa (até 3):** o botão **Tela** adiciona mais uma; **Parar compartilhamento** para todas, e cada
+  tela própria tem o seu "Parar de compartilhar". A primeira ocupa o tile da pessoa; as adicionais viram tiles extras
+  ("Tela 2 de Ana"), cada um com o seu volume do som da aba. Slots fixos: parar uma tela não mexe nas outras
+- **Formato original:** a tela aberta e o tile selecionado mostram a imagem **inteira, sem esticar nem cortar**
+  (`object-fit: contain`); a câmera na grade continua preenchendo o tile
 - **Controle das telas (só para quem o faz):** clique num tile para **selecioná-lo**: ele fica grande e os demais,
   participantes inclusive, ficam numa faixa embaixo (clique de novo ou Esc solta). Um overlay sobre cada tile, ao
-  passar o mouse, controla o **volume** e **silenciar** (da voz e, com a tela aberta, do som da aba), destacar e
-  **fechar** (fechar a tela volta ao avatar/câmera e para o som da aba; fechar o tile o manda para a faixa "Fechadas")
+  passar o mouse, controla o **volume** e **silenciar** (da voz e, com a tela aberta, do som da aba), **fixar**,
+  **tela cheia** de verdade (API de fullscreen) e **fechar** (fechar a tela volta ao avatar/câmera e para o som da aba;
+  fechar o tile o manda para a faixa "Fechadas"). O volume de cada pessoa também fica na aba **Participantes** do painel
+  (é o mesmo controle do overlay)
 - **Configurações → Transmissão:** qualidade do que você envia, separada para câmera e tela: resolução, FPS, taxa de
   bits máxima e, na tela, prioridade (movimento fluido ou nitidez do texto). Vale na hora e fica lembrada; mostra o
   que a captura realmente entrega e uma estimativa do envio total (malha: cada par recebe um fluxo seu)
@@ -181,11 +188,11 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 246 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 275 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (31 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, fechar/silenciar/volume/selecionar, som da aba, dispositivos e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 31 passaram |
+| E2E, 2 participantes (43 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 43 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |

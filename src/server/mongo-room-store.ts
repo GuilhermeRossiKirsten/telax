@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { MongoServerError, type Collection, type Document, type Filter } from 'mongodb';
 import type { PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
+import { resolveMediaState } from '@/lib/validation';
 import {
   MAX_EVENTS,
   MAX_PEERS,
@@ -17,6 +18,8 @@ type PeerDoc = {
   audio: boolean;
   video: boolean;
   sharing: boolean;
+  /** ausente em salas gravadas antes das várias telas: vale `sharing ? 1 : 0` */
+  screenSlots?: number;
   tokenHash: string;
 };
 
@@ -60,6 +63,7 @@ const peerInfo = (id: string, p: PeerDoc): PeerInfo => ({
   audio: p.audio,
   video: p.video,
   sharing: p.sharing,
+  screenSlots: p.screenSlots ?? (p.sharing ? 1 : 0),
 });
 
 /** Nº de peers vivos (lastSeen ≥ limit) dentro de um update/filtro. */
@@ -123,7 +127,7 @@ export class MongoRoomStore implements RoomStore {
     const token = randomUUID();
     const t = this.now();
     const limit = t - PEER_TTL_MS;
-    const info: PeerInfo = { id: peerId, name, joinedAt: t, audio: true, video: true, sharing: false };
+    const info: PeerInfo = { id: peerId, name, joinedAt: t, audio: true, video: true, sharing: false, screenSlots: 0 };
 
     // O MongoDB não aceita `$expr` no filtro de um upsert, então são dois passos: garante a sala e depois
     // entra com a checagem de lotação num update comum (atômico, vale entre instâncias).
@@ -141,6 +145,7 @@ export class MongoRoomStore implements RoomStore {
                 audio: true,
                 video: true,
                 sharing: false,
+                screenSlots: 0,
                 tokenHash: hashToken(token),
               },
             },
@@ -244,7 +249,7 @@ export class MongoRoomStore implements RoomStore {
   async setState(room: string, from: string, state: PeerMediaState) {
     if (!UUID.test(from)) throw new UnknownPeerError();
     const t = this.now();
-    const next: PeerMediaState = { audio: state.audio, video: state.video, sharing: state.sharing };
+    const next = resolveMediaState(state);
     const doc = await this.rooms.findOneAndUpdate(
       { _id: room, [`peers.${from}.lastSeen`]: { $gte: t - PEER_TTL_MS } } as Filter<RoomDoc>,
       [
@@ -254,6 +259,7 @@ export class MongoRoomStore implements RoomStore {
             [`peers.${from}.audio`]: next.audio,
             [`peers.${from}.video`]: next.video,
             [`peers.${from}.sharing`]: next.sharing,
+            [`peers.${from}.screenSlots`]: next.screenSlots,
           },
         },
         ...emitStages('state', from, literal(next), undefined, t),

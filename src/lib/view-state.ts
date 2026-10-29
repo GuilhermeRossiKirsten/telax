@@ -2,30 +2,35 @@
  * Preferências de exibição, só do lado do usuário: o que ele fecha, silencia, ajusta de volume, abre ou
  * seleciona não muda nada para os outros e não passa pelo servidor.
  *
- * Há UM tile por participante. Quando a pessoa compartilha a tela, a tela ocupa o lugar do avatar/câmera
- * dentro do mesmo tile (nada de um segundo componente).
+ * Há UM tile por participante. A tela compartilhada de menor slot ocupa o lugar do avatar/câmera nesse mesmo
+ * tile; cada tela adicional vira um tile extra (`peerId#slot`). Uma tela é identificada por `peerId#slot`.
  */
 
-export type Layout = 'grid' | 'spotlight';
-export type AudioKind = 'camera' | 'screen';
+import { screenLabel, slotsFromMask } from './screens';
 
-/** `id` é o peerId do participante. */
-export type Tile = { id: string; peerId: string; name: string; self: boolean; sharing: boolean };
+export type Layout = 'grid' | 'spotlight';
+export type TileKind = 'person' | 'screen';
+
+/**
+ * `id` é o peerId (tile da pessoa) ou `peerId#slot` (tile extra de tela).
+ * `slot` é a tela que o tile mostra (a de menor slot, no tile da pessoa); `null` se a pessoa não compartilha.
+ */
+export type Tile = { id: string; kind: TileKind; peerId: string; name: string; self: boolean; slot: number | null };
 
 export type ViewState = {
   /** todos os tiles existentes (inclui os escondidos), na ordem de chegada */
   order: string[];
   /** escondidos pelo usuário: saem do palco (o som segue o mesmo, a menos que também silenciados) */
   hidden: string[];
-  /** chaves de áudio silenciadas: `camera:<peer>` (voz) e `screen:<peer>` (som da aba compartilhada) */
+  /** chaves de áudio silenciadas: `camera:<peer>` (voz) e `screen:<peer>#<slot>` (som da aba de uma tela) */
   muted: string[];
   /** volume de 0 a 1 por chave de áudio; sem entrada vale 1 */
   volume: Record<string, number>;
   /** o tile em destaque: fica grande e os demais ficam embaixo */
   selected: string | null;
-  /** participantes cuja tela compartilhada (de outra pessoa) o usuário abriu */
+  /** telas de outras pessoas que o usuário abriu (ids `peer#slot`) */
   screens: string[];
-  /** participantes que compartilham a tela agora (para detectar um novo compartilhamento) */
+  /** telas sendo compartilhadas agora (ids `peer#slot`), para detectar um novo compartilhamento */
   sharing: string[];
 };
 
@@ -38,58 +43,81 @@ export type ViewAction =
   | { type: 'openScreen'; id: string }
   | { type: 'closeScreen'; id: string };
 
-/** A tela compartilhada por outra pessoa começa fechada e com o som da aba mutado: cada um abre e ativa a que quer. */
+/** Toda tela de outra pessoa começa fechada e com o som da aba mutado: cada um abre e ativa a que quer. */
 export const START_REMOTE_SCREENS_OFF = true;
 
-export const audioKey = (peerId: string, kind: AudioKind) => `${kind}:${peerId}`;
+export const screenId = (peerId: string, slot: number) => `${peerId}#${slot}`;
+export const voiceKey = (peerId: string) => `camera:${peerId}`;
+export const screenKey = (sid: string) => `screen:${sid}`;
+
+/** A tela que o tile mostra (`peer#slot`), ou null. */
+export const screenIdOf = (t: Pick<Tile, 'peerId' | 'slot'>) => (t.slot === null ? null : screenId(t.peerId, t.slot));
 
 /** Nome mostrado no tile e nos botões. */
-export const tileLabel = (t: Pick<Tile, 'name' | 'self'>) => (t.self ? `${t.name} (você)` : t.name);
+export function tileLabel(t: Pick<Tile, 'kind' | 'name' | 'self' | 'slot'>) {
+  if (t.kind === 'screen' && t.slot !== null) return screenLabel(t.name, t.slot);
+  return t.self ? `${t.name} (você)` : t.name;
+}
 
-export function buildTiles(participants: ReadonlyArray<{ id: string; name: string; sharing: boolean; conn: string }>): Tile[] {
-  return participants.map((p) => ({ id: p.id, peerId: p.id, name: p.name, self: p.conn === 'self', sharing: p.sharing }));
+type PersonInput = { id: string; name: string; conn: string; screenSlots?: number; sharing?: boolean };
+
+export function buildTiles(participants: ReadonlyArray<PersonInput>): Tile[] {
+  const tiles: Tile[] = [];
+  for (const p of participants) {
+    const self = p.conn === 'self';
+    // sem `screenSlots` (cliente/servidor antigo), o booleano `sharing` vale como a tela 0
+    const slots = slotsFromMask(p.screenSlots ?? (p.sharing ? 1 : 0));
+    tiles.push({ id: p.id, kind: 'person', peerId: p.id, name: p.name, self, slot: slots[0] ?? null });
+    for (const slot of slots.slice(1)) {
+      tiles.push({ id: screenId(p.id, slot), kind: 'screen', peerId: p.id, name: p.name, self, slot });
+    }
+  }
+  return tiles;
 }
 
 export const initialView = (): ViewState => ({ order: [], hidden: [], muted: [], volume: {}, selected: null, screens: [], sharing: [] });
 
 export const volumeOf = (state: ViewState, key: string) => state.volume[key] ?? 1;
 
-/** O tile está mostrando a tela compartilhada (a própria sempre; a dos outros só depois de aberta). */
-export const showsScreen = (t: Tile, state: ViewState) => t.sharing && (t.self || state.screens.includes(t.id));
+/** O tile está mostrando uma tela (a própria sempre; a dos outros só depois de aberta). */
+export function showsScreen(t: Tile, state: ViewState): boolean {
+  const sid = screenIdOf(t);
+  return sid !== null && (t.self || state.screens.includes(sid));
+}
 
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+const peerOfScreen = (sid: string) => sid.split('#')[0];
 
-/** `camera:<peer>` vale para qualquer tile; `screen:<peer>` só para quem compartilha agora. */
-function validKey(state: ViewState, key: string): boolean {
-  const [kind, ...rest] = key.split(':');
-  const id = rest.join(':');
-  if (!state.order.includes(id)) return false;
-  return kind === 'camera' || (kind === 'screen' && state.sharing.includes(id));
+/** `camera:<peer>` vale para quem está na sala; `screen:<peer>#<slot>` só para telas compartilhadas agora. */
+function keyAlive(key: string, peers: ReadonlySet<string>, live: ReadonlyArray<string>): boolean {
+  const i = key.indexOf(':');
+  const kind = key.slice(0, i);
+  const rest = key.slice(i + 1);
+  if (kind === 'camera') return peers.has(rest);
+  if (kind === 'screen') return live.includes(rest);
+  return false;
 }
 
 export function viewReducer(state: ViewState, action: ViewAction): ViewState {
   switch (action.type) {
     case 'sync': {
       const alive = new Set(action.tiles.map((t) => t.id));
+      const peers = new Set(action.tiles.filter((t) => t.kind === 'person').map((t) => t.id));
       const known = new Set(state.order);
       const order = [...state.order.filter((id) => alive.has(id)), ...action.tiles.filter((t) => !known.has(t.id)).map((t) => t.id)];
-      const sharing = action.tiles.filter((t) => t.sharing).map((t) => t.id);
-      const freshRemote = action.tiles.filter((t) => t.sharing && !t.self && !state.sharing.includes(t.id)).map((t) => t.id);
-      const keyOk = (key: string) => {
-        const [kind, ...rest] = key.split(':');
-        const id = rest.join(':');
-        return alive.has(id) && (kind === 'camera' || (kind === 'screen' && sharing.includes(id)));
-      };
+      const sharing = action.tiles.flatMap((t) => screenIdOf(t) ?? []);
+      const freshRemote = action.tiles.filter((t) => !t.self).flatMap((t) => screenIdOf(t) ?? []).filter((sid) => !state.sharing.includes(sid));
       const hidden = state.hidden.filter((id) => alive.has(id));
-      const screens = state.screens.filter((id) => sharing.includes(id));
+      const screens = state.screens.filter((sid) => sharing.includes(sid));
+      const alivekey = (k: string) => keyAlive(k, peers, sharing);
       const muted = [
-        ...state.muted.filter(keyOk),
+        ...state.muted.filter(alivekey),
         // o som da aba só toca quando a pessoa ativa
-        ...(START_REMOTE_SCREENS_OFF ? freshRemote.map((id) => audioKey(id, 'screen')) : []),
+        ...(START_REMOTE_SCREENS_OFF ? freshRemote.map(screenKey) : []),
       ];
-      const keptVolume = Object.keys(state.volume).filter(keyOk);
+      const keptVolume = Object.keys(state.volume).filter(alivekey);
       const selected = state.selected && alive.has(state.selected) ? state.selected : null;
       if (
         sameList(order, state.order) &&
@@ -109,8 +137,10 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
       if (!state.order.includes(action.id)) return state;
       return { ...state, hidden: toggle(state.hidden, action.id), selected: state.selected === action.id ? null : state.selected };
     }
-    case 'toggleMuted':
-      return validKey(state, action.key) ? { ...state, muted: toggle(state.muted, action.key) } : state;
+    case 'toggleMuted': {
+      const peers = new Set(state.order.filter((id) => !id.includes('#')));
+      return keyAlive(action.key, peers, state.sharing) ? { ...state, muted: toggle(state.muted, action.key) } : state;
+    }
     case 'select': {
       if (action.id === null) return state.selected === null ? state : { ...state, selected: null };
       if (!state.order.includes(action.id)) return state;
@@ -118,16 +148,19 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
       return { ...state, selected: action.id, hidden: state.hidden.filter((id) => id !== action.id) };
     }
     case 'volume': {
-      if (!validKey(state, action.key) || !Number.isFinite(action.volume)) return state;
+      const peers = new Set(state.order.filter((id) => !id.includes('#')));
+      if (!keyAlive(action.key, peers, state.sharing) || !Number.isFinite(action.volume)) return state;
       const volume = clamp01(action.volume);
       return volume === volumeOf(state, action.key) ? state : { ...state, volume: { ...state.volume, [action.key]: volume } };
     }
     case 'openScreen': {
       if (!state.sharing.includes(action.id) || state.screens.includes(action.id)) return state;
-      return { ...state, screens: [...state.screens, action.id], hidden: state.hidden.filter((id) => id !== action.id) };
+      // abrir a tela mostra o tile que a exibe (o extra ou o da pessoa)
+      const unhide = new Set([action.id, peerOfScreen(action.id)]);
+      return { ...state, screens: [...state.screens, action.id], hidden: state.hidden.filter((id) => !unhide.has(id)) };
     }
     case 'closeScreen':
-      return state.screens.includes(action.id) ? { ...state, screens: state.screens.filter((id) => id !== action.id) } : state;
+      return state.screens.includes(action.id) ? { ...state, screens: state.screens.filter((sid) => sid !== action.id) } : state;
   }
 }
 
@@ -142,7 +175,7 @@ export function orderedTiles(tiles: Tile[], state: ViewState): Tile[] {
 export const visibleTiles = (tiles: Tile[], state: ViewState): Tile[] =>
   orderedTiles(tiles, state).filter((t) => !state.hidden.includes(t.id));
 
-/** O tile grande do destaque: o selecionado; senão o primeiro que está mostrando uma tela compartilhada. */
+/** O tile grande do destaque: o selecionado; senão o primeiro que está mostrando uma tela. */
 export function primaryTile(visible: Tile[], state: ViewState): Tile | undefined {
   return visible.find((t) => t.id === state.selected) ?? visible.find((t) => showsScreen(t, state));
 }
@@ -150,4 +183,10 @@ export function primaryTile(visible: Tile[], state: ViewState): Tile | undefined
 /** Destaque quando há um selecionado ou uma tela aberta (com ao menos 2 tiles); senão, grade. */
 export function effectiveLayout(visible: Tile[], state: ViewState): Layout {
   return visible.length >= 2 && primaryTile(visible, state) ? 'spotlight' : 'grid';
+}
+
+/** Ajusta o volume de uma fonte de áudio; mexer em quem está silenciado volta a ouvir. */
+export function applyVolume(state: ViewState, dispatch: (a: ViewAction) => void, key: string, volume: number) {
+  dispatch({ type: 'volume', key, volume });
+  if (volume > 0 && state.muted.includes(key)) dispatch({ type: 'toggleMuted', key });
 }

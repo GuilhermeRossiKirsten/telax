@@ -3,19 +3,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_QUALITY, contentHintFor, describeActual, toVideoConstraints, type QualitySettings } from '@/lib/quality';
 import { captureScreen } from '@/lib/screen-capture';
+import { MAX_SCREENS, maskFromSlots } from '@/lib/screens';
 import { describeMediaError } from './media-errors';
 
 const MIC_ERROR = 'Não foi possível usar esse microfone.';
 /** limpa só o erro do microfone (uma troca bem-sucedida), sem apagar outros avisos */
 const clearMicError = (e: string | null) => (e === MIC_ERROR ? null : e);
 
+/** Uma posição por slot de tela (sempre MAX_SCREENS); slot livre = faixas nulas. */
+export type ScreenTracks = { video: MediaStreamTrack | null; audio: MediaStreamTrack | null };
 export type LocalTracks = {
   audio: MediaStreamTrack | null;
   camera: MediaStreamTrack | null;
-  screen: MediaStreamTrack | null;
-  /** som da aba compartilhada (só existe se o navegador o entregou e o usuário marcou "compartilhar áudio") */
-  screenAudio: MediaStreamTrack | null;
+  /** telas compartilhadas por slot; o som da aba de cada uma só existe se o navegador o entregou e o usuário marcou "compartilhar áudio" */
+  screens: ScreenTracks[];
 };
+
+const emptySlots = (): Array<MediaStream | null> => Array.from({ length: MAX_SCREENS }, () => null);
 
 const ATTEMPTS: MediaStreamConstraints[] = [{ audio: true, video: true }, { audio: true }, { video: true }];
 
@@ -27,11 +31,12 @@ const stopStream = (s: MediaStream | null) => s?.getTracks().forEach((t) => t.st
  */
 export function useLocalMedia() {
   const [camera, setCamera] = useState<MediaStream | null>(null);
-  const [screen, setScreen] = useState<MediaStream | null>(null);
+  const [screens, setScreens] = useState<Array<MediaStream | null>>(emptySlots);
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const screenRef = useRef<MediaStream | null>(null);
+  /** espelho de `screens` para callbacks (um stream por slot; slot livre = null) */
+  const screensRef = useRef<Array<MediaStream | null>>(emptySlots());
   const cameraRef = useRef<MediaStream | null>(null);
   const releasedRef = useRef(false);
   const aliveRef = useRef(true);
@@ -68,7 +73,7 @@ export function useLocalMedia() {
     (q: QualitySettings) => {
       qualityRef.current = q;
       void applyQuality('camera', cameraRef.current?.getVideoTracks()[0]);
-      void applyQuality('screen', screenRef.current?.getVideoTracks()[0]);
+      for (const stream of screensRef.current) void applyQuality('screen', stream?.getVideoTracks()[0]);
     },
     [applyQuality],
   );
@@ -117,8 +122,8 @@ export function useLocalMedia() {
       // cameraRef (e não o stream da captura inicial): o selectMic pode ter trocado o stream da câmera
       stopStream(cameraRef.current);
       cameraRef.current = null;
-      stopStream(screenRef.current);
-      screenRef.current = null;
+      screensRef.current.forEach(stopStream);
+      screensRef.current = emptySlots();
     };
   }, [applyQuality]);
 
@@ -127,10 +132,10 @@ export function useLocalMedia() {
     releasedRef.current = true;
     stopStream(cameraRef.current);
     cameraRef.current = null;
-    stopStream(screenRef.current);
-    screenRef.current = null;
+    screensRef.current.forEach(stopStream);
+    screensRef.current = emptySlots();
     setCamera(null);
-    setScreen(null);
+    setScreens(emptySlots());
     setMicOn(false);
     setCamOn(false);
   }, []);
@@ -212,23 +217,41 @@ export function useLocalMedia() {
     setCamOn(t.enabled);
   }, [camera]);
 
-  const stopScreen = useCallback(() => {
-    stopStream(screenRef.current);
-    screenRef.current = null;
-    setScreen(null);
+  /** Para a tela de um slot (e só ela): as outras continuam. */
+  const stopScreen = useCallback((slot: number) => {
+    const stream = screensRef.current[slot];
+    if (!stream) return;
+    stopStream(stream);
+    const next = [...screensRef.current];
+    next[slot] = null;
+    screensRef.current = next;
+    setScreens(next);
+    if (next.every((x) => x === null)) setInUse((prev) => ({ ...prev, screen: '' }));
+  }, []);
+
+  const stopAllScreens = useCallback(() => {
+    screensRef.current.forEach(stopStream);
+    screensRef.current = emptySlots();
+    setScreens(emptySlots());
     setInUse((prev) => ({ ...prev, screen: '' }));
   }, []);
 
-  const toggleScreen = useCallback(async () => {
-    if (screenRef.current) return stopScreen();
+  /** Adiciona uma tela (o navegador abre o seletor) no primeiro slot livre; no limite não faz nada. */
+  const addScreen = useCallback(async () => {
+    const slot = screensRef.current.findIndex((x) => x === null);
+    if (slot < 0) return;
     try {
       const stream = await captureScreen((o) => navigator.mediaDevices.getDisplayMedia(o));
       // o botão "parar compartilhamento" do navegador encerra o track por fora do nosso botão
       stream.getVideoTracks()[0].addEventListener('ended', () => {
-        if (screenRef.current === stream) stopScreen();
+        if (screensRef.current[slot] === stream) stopScreen(slot);
       }, { once: true });
-      screenRef.current = stream;
-      setScreen(stream);
+      // o slot pode ter sido ocupado (ou tudo solto) enquanto o seletor estava aberto
+      if (!aliveRef.current || releasedRef.current || screensRef.current[slot]) return stopStream(stream);
+      const next = [...screensRef.current];
+      next[slot] = stream;
+      screensRef.current = next;
+      setScreens(next);
       void applyQuality('screen', stream.getVideoTracks()[0]);
     } catch (e) {
       if (e instanceof Error && e.name === 'NotAllowedError') return; // usuário cancelou o seletor
@@ -240,20 +263,25 @@ export function useLocalMedia() {
     () => ({
       audio: camera?.getAudioTracks()[0] ?? null,
       camera: camera?.getVideoTracks()[0] ?? null,
-      screen: screen?.getVideoTracks()[0] ?? null,
-      screenAudio: screen?.getAudioTracks()[0] ?? null,
+      screens: screens.map((st) => ({ video: st?.getVideoTracks()[0] ?? null, audio: st?.getAudioTracks()[0] ?? null })),
     }),
-    [camera, screen],
+    [camera, screens],
   );
+
+  const activeSlots = screens.flatMap((st, i) => (st ? [i] : []));
 
   return {
     camera,
-    screen,
+    screens,
     tracks,
     micOn,
     camOn,
-    sharing: screen !== null,
-    sharingAudio: tracks.screenAudio !== null,
+    sharing: activeSlots.length > 0,
+    /** máscara de bits dos slots de tela ativos (vai para os outros pelo estado da sala) */
+    screenSlots: maskFromSlots(activeSlots),
+    screenCount: activeSlots.length,
+    canAddScreen: activeSlots.length < MAX_SCREENS,
+    sharingAudio: tracks.screens.some((x) => x.audio !== null),
     hasMic: tracks.audio !== null,
     hasCam: tracks.camera !== null,
     error,
@@ -263,6 +291,8 @@ export function useLocalMedia() {
     inUse,
     toggleMic,
     toggleCam,
-    toggleScreen,
+    addScreen,
+    stopScreen,
+    stopAllScreens,
   };
 }

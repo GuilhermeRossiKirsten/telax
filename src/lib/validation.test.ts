@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeChat, normalizeName, normalizeRoom, safeDecode } from './validation';
+import { normalizeChat, normalizeName, normalizeRoom, parseMediaState, resolveMediaState, safeDecode } from './validation';
 
 describe('normalizeRoom', () => {
   it('apara espaços e converte para minúsculas', () => {
@@ -48,5 +48,44 @@ describe('safeDecode', () => {
   });
   it('não altera texto simples', () => {
     expect(safeDecode('sala-1')).toBe('sala-1');
+  });
+});
+
+describe('parseMediaState (corpo de POST /state)', () => {
+  const base = { audio: true, video: false };
+  it('só sharing boolean: vira screenSlots 0 ou 1', () => {
+    expect(parseMediaState({ ...base, sharing: true })).toEqual({ audio: true, video: false, sharing: true, screenSlots: 1 });
+    expect(parseMediaState({ ...base, sharing: false })).toEqual({ audio: true, video: false, sharing: false, screenSlots: 0 });
+  });
+  it('só screenSlots: deriva sharing', () => {
+    expect(parseMediaState({ ...base, screenSlots: 5 })).toEqual({ audio: true, video: false, sharing: true, screenSlots: 5 });
+    expect(parseMediaState({ ...base, screenSlots: 0 })).toEqual({ audio: true, video: false, sharing: false, screenSlots: 0 });
+  });
+  it('inconsistentes: vale screenSlots e sharing é derivado', () => {
+    expect(parseMediaState({ ...base, sharing: false, screenSlots: 2 })).toMatchObject({ sharing: true, screenSlots: 2 });
+    expect(parseMediaState({ ...base, sharing: true, screenSlots: 0 })).toMatchObject({ sharing: false, screenSlots: 0 });
+  });
+  it('inválidos viram null', () => {
+    for (const screenSlots of [8, -1, 1.5, '3', Number.NaN, null, {}, []]) {
+      expect(parseMediaState({ ...base, sharing: false, screenSlots })).toBeNull();
+      expect(parseMediaState({ ...base, screenSlots })).toBeNull();
+    }
+    expect(parseMediaState({ ...base })).toBeNull(); // nem sharing nem screenSlots
+    expect(parseMediaState({ ...base, sharing: 'sim' })).toBeNull();
+    expect(parseMediaState({ ...base, sharing: 'sim', screenSlots: 1 })).toBeNull();
+    expect(parseMediaState({ audio: 'x', video: true, sharing: false })).toBeNull();
+    expect(parseMediaState({ audio: true, sharing: false })).toBeNull();
+  });
+});
+
+describe('resolveMediaState (o que os stores guardam)', () => {
+  it('sem screenSlots, deriva de sharing; com screenSlots válido, ele manda', () => {
+    expect(resolveMediaState({ audio: true, video: true, sharing: true })).toEqual({ audio: true, video: true, sharing: true, screenSlots: 1 });
+    expect(resolveMediaState({ audio: true, video: true, sharing: true, screenSlots: 0 })).toEqual({ audio: true, video: true, sharing: false, screenSlots: 0 });
+    expect(resolveMediaState({ audio: true, video: true, sharing: false, screenSlots: 6 })).toEqual({ audio: true, video: true, sharing: true, screenSlots: 6 });
+  });
+  it('screenSlots inválido cai de volta em sharing', () => {
+    expect(resolveMediaState({ audio: true, video: true, sharing: true, screenSlots: 99 })).toMatchObject({ sharing: true, screenSlots: 1 });
+    expect(resolveMediaState({ audio: true, video: true, sharing: false, screenSlots: -2 })).toMatchObject({ sharing: false, screenSlots: 0 });
   });
 });

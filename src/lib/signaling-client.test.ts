@@ -274,4 +274,19 @@ describe('envio', () => {
     expect(body('restart')).toEqual({ from: 'p1', token: 'tok-p1' });
     t.client.stop();
   });
+
+  it('setState envia screenSlots quando informado', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }), state: () => ok({ ok: true }) });
+    await t.client.start();
+    await t.client.setState({ audio: true, video: true, sharing: true, screenSlots: 5 });
+    expect(JSON.parse(String(t.calls.find((c) => c.route === 'state')!.init.body))).toEqual({
+      from: 'p1',
+      token: 'tok-p1',
+      audio: true,
+      video: true,
+      sharing: true,
+      screenSlots: 5,
+    });
+    t.client.stop();
+  });
 });

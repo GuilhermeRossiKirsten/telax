@@ -21,8 +21,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   const router = useRouter();
   const local = useLocalMedia();
   const media = useMemo(
-    () => ({ audio: local.micOn, video: local.camOn, sharing: local.sharing }),
-    [local.micOn, local.camOn, local.sharing],
+    () => ({ audio: local.micOn, video: local.camOn, sharing: local.sharing, screenSlots: local.screenSlots }),
+    [local.micOn, local.camOn, local.sharing, local.screenSlots],
   );
   const qualityApi = useQuality();
   // a qualidade escolhida vale para a captura (resolução/fps) assim que muda, e para a câmera/tela que abrirem depois
@@ -160,7 +160,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
               participants={r.participants}
               remoteStreams={r.remoteStreams}
               localCamera={local.camera}
-              localScreen={local.screen}
+              localScreens={local.screens}
+              onStopShare={local.stopScreen}
               tiles={screens.tiles}
               view={screens.view}
               dispatch={screens.dispatch}
@@ -174,6 +175,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           <SidePanel
             tab={tab}
             onTab={setTab}
+            view={screens.view}
+            onView={screens.dispatch}
             participants={r.participants}
             messages={r.messages}
             files={r.files}
@@ -189,6 +192,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         micOn={local.micOn}
         camOn={local.camOn}
         sharing={local.sharing}
+        screenCount={local.screenCount}
+        canAddScreen={local.canAddScreen}
         sharingAudio={local.sharingAudio}
         hasMic={local.hasMic}
         hasCam={local.hasCam}
@@ -196,7 +201,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         restarting={restarting}
         onMic={local.toggleMic}
         onCam={local.toggleCam}
-        onScreen={local.toggleScreen}
+        onScreen={local.addScreen}
+        onStopScreens={local.stopAllScreens}
         onPanel={() => setPanelOpen((o) => !o)}
         onSettings={() => setSettingsOpen(true)}
         onRestart={restart}

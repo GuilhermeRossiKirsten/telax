@@ -227,3 +227,42 @@ test('escolher outra saída de áudio vale para o som remoto e é lembrada', asy
   await ana.ctx.close();
   await beto.ctx.close();
 });
+
+test('Configurações em janela baixa: título e "Fechar" ficam à vista e só o miolo rola, com barra fina', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'scroll');
+  await ana.page.setViewportSize({ width: 1100, height: 560 });
+  await openSettings(ana.page);
+
+  const body = dialog(ana.page).locator('.sd-body');
+  await expect(body).toBeVisible();
+  const m = await body.evaluate((el: HTMLElement) => ({
+    scrolls: el.scrollHeight > el.clientHeight,
+    thin: getComputedStyle(el).scrollbarWidth,
+    overflowY: getComputedStyle(el).overflowY,
+  }));
+  expect(m.scrolls).toBe(true); // há mais conteúdo que o espaço: o miolo rola
+  expect(m.overflowY).toBe('auto');
+  expect(m.thin).toBe('thin');
+  // o cartão em si não rola (isso faria título, cantos e botão irem embora junto)
+  const card = await dialog(ana.page).evaluate((el: HTMLElement) => ({ scroll: el.scrollHeight, client: el.clientHeight, overflow: getComputedStyle(el).overflowY }));
+  expect(card.scroll).toBeLessThanOrEqual(card.client + 1);
+  expect(card.overflow).toBe('hidden');
+
+  // no fim da rolagem, o título e o botão continuam na janela
+  await body.evaluate((el: HTMLElement) => el.scrollTo(0, el.scrollHeight));
+  const inView = (loc: ReturnType<typeof dialog>) =>
+    loc.evaluate((el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight;
+    });
+  expect(await inView(dialog(ana.page).getByRole('heading', { name: 'Configurações', level: 2 }))).toBe(true);
+  expect(await inView(dialog(ana.page).getByRole('button', { name: 'Fechar' }))).toBe(true);
+  // o último campo da seção Transmissão é alcançável rolando
+  await expect(dialog(ana.page).getByRole('button', { name: 'Restaurar automático' })).toBeVisible();
+
+  await dialog(ana.page).getByRole('button', { name: 'Fechar' }).click();
+  await expect(dialog(ana.page)).toHaveCount(0);
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});

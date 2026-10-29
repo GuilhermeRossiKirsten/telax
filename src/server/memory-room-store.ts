@@ -8,6 +8,7 @@ import {
   UnknownPeerError,
   type RoomStore,
 } from './room-store';
+import { resolveMediaState } from '@/lib/validation';
 
 type Peer = PeerInfo & { lastSeen: number; token: string };
 
@@ -46,6 +47,7 @@ export class MemoryRoomStore implements RoomStore {
       audio: true,
       video: true,
       sharing: false,
+      screenSlots: 0,
       token: randomUUID(),
     };
     r.peers.set(peer.id, peer);
@@ -98,10 +100,12 @@ export class MemoryRoomStore implements RoomStore {
   setState(room: string, from: string, state: PeerMediaState) {
     const r = this.requirePeer(room, from);
     const peer = r.peers.get(from)!;
-    peer.audio = state.audio;
-    peer.video = state.video;
-    peer.sharing = state.sharing;
-    this.emit(r, 'state', from, state);
+    const media = resolveMediaState(state);
+    peer.audio = media.audio;
+    peer.video = media.video;
+    peer.sharing = media.sharing;
+    peer.screenSlots = media.screenSlots;
+    this.emit(r, 'state', from, media);
   }
 
   restart(room: string, from: string) {

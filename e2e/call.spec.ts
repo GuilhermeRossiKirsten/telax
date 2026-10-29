@@ -184,6 +184,8 @@ test('microfone e câmera refletem o estado nos outros participantes', async ({ 
 
 const tilesOf = (p: Page) => p.locator('figure[data-testid="tile"]');
 const shareButton = (p: Page) => p.getByRole('button', { name: 'Tela', exact: true });
+/** `Tela` só ADICIONA uma tela (até 3); este botão, que aparece enquanto há alguma, para TODAS. */
+const stopSharingButton = (p: Page) => p.getByRole('button', { name: 'Parar compartilhamento', exact: true });
 
 test('compartilhar tela: a tela entra no MESMO tile da pessoa, no lugar do avatar (um tile só)', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'tela');
@@ -208,7 +210,7 @@ test('compartilhar tela: a tela entra no MESMO tile da pessoa, no lugar do avata
   await expect(beto.page.getByTestId('tiles')).toHaveAttribute('data-layout', 'spotlight');
   await expect.poll(() => tile.locator('video:not(.tile-inset)').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
 
-  await shareButton(ana.page).click();
+  await stopSharingButton(ana.page).click();
   await expect(tile).not.toHaveAttribute('data-sharing', 'true');
   await expect(tile).toHaveAttribute('data-showing', 'camera');
   await expect(tilesOf(beto.page)).toHaveCount(2);
@@ -232,7 +234,7 @@ test('quem compartilha vê a própria tela no próprio tile, sem avatar nem "Ver
   await expect(tilesOf(ana.page)).toHaveCount(2);
   await expect(tilesOf(beto.page)).toHaveCount(2);
 
-  await shareButton(ana.page).click();
+  await stopSharingButton(ana.page).click();
   await expect(mine).toHaveAttribute('data-showing', 'camera');
   await expect(tilesOf(ana.page)).toHaveCount(2);
   await ana.ctx.close();
@@ -319,7 +321,8 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   await expectConnected(beto.page, 'Ana');
 
   await shareButton(ana.page).click();
-  await expect(shareButton(ana.page)).toHaveAttribute('title', /som da aba está sendo enviado/);
+  await expect(shareButton(ana.page)).toHaveAttribute('aria-pressed', 'true'); // compartilhando
+  await expect(stopSharingButton(ana.page)).toBeVisible();
 
   const tile = tileOf(beto.page, 'Ana');
   await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
@@ -354,7 +357,7 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   });
   expect(peak).toBeGreaterThan(0.02);
 
-  await shareButton(ana.page).click();
+  await stopSharingButton(ana.page).click();
   await expect(tile).not.toHaveAttribute('data-sharing', 'true');
   await expect(sound).toHaveCount(0); // sem compartilhamento não há <audio> de tela
   expect(ana.errors).toEqual([]);
@@ -460,6 +463,42 @@ test('clicar numa tela a seleciona: fica grande e os outros ficam embaixo; Esc s
   await expect(tile).toHaveCount(0, { timeout: 25_000 });
   await expect(mine).toBeVisible(); // nada de destaque vazio
   await expect(tiles).toHaveAttribute('data-layout', 'grid');
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('o botão de maximizar põe o tile em tela cheia de verdade e dá para sair', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'telacheia');
+  await expectConnected(ana.page, 'Beto');
+  const tile = tileOf(ana.page, 'Beto');
+  const sound = audioOf(ana.page, 'camera');
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
+  await markAudio(sound);
+  const full = () => ana.page.evaluate(() => (document.fullscreenElement as HTMLElement | null)?.dataset.testid ?? null);
+
+  expect(await full()).toBeNull();
+  await tile.hover();
+  await tile.getByRole('button', { name: 'Tela cheia Beto' }).click();
+  // é o PRÓPRIO tile (e não a página) que está em tela cheia, ocupando a janela toda
+  await expect.poll(full).toBe('tile');
+  const box = await tile.evaluate((el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), iw: window.innerWidth, ih: window.innerHeight };
+  });
+  expect(box.w).toBe(box.iw);
+  expect(box.h).toBe(box.ih);
+  await expect.poll(() => tile.locator('video').evaluate((v: HTMLVideoElement) => !v.paused)).toBe(true);
+  // em tela cheia os controles continuam ali (agora para sair) e o som segue o mesmo
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
+  // maximizar não mexe na seleção: quem seleciona é o clique no tile ou o botão de destacar
+  await expect(tile).not.toHaveAttribute('data-selected', 'true');
+
+  await tile.hover();
+  await tile.getByRole('button', { name: 'Sair da tela cheia Beto' }).click();
+  await expect.poll(full).toBeNull();
+  await expect(tile).toBeVisible();
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
+  expect(ana.errors).toEqual([]);
   await ana.ctx.close();
   await beto.ctx.close();
 });

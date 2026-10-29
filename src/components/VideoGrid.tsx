@@ -4,13 +4,16 @@ import { useCallback, useState } from 'react';
 import type { Participant, RemoteStreams } from '@/hooks/use-room';
 import type { ViewApi } from '@/hooks/use-view-state';
 import {
-  audioKey,
+  applyVolume,
   effectiveLayout,
   orderedTiles,
   primaryTile,
+  screenIdOf,
+  screenKey,
   showsScreen,
   tileLabel,
   visibleTiles,
+  voiceKey,
   volumeOf,
   type Tile,
 } from '@/lib/view-state';
@@ -22,14 +25,16 @@ type Props = {
   participants: Participant[];
   remoteStreams: Record<string, RemoteStreams>;
   localCamera: MediaStream | null;
-  localScreen: MediaStream | null;
+  /** telas próprias por slot (null = slot livre) */
+  localScreens: Array<MediaStream | null>;
   tiles: ViewApi['tiles'];
   view: ViewApi['view'];
   dispatch: ViewApi['dispatch'];
   sinkId?: string;
+  onStopShare(slot: number): void;
 };
 
-export function VideoGrid({ participants, remoteStreams, localCamera, localScreen, tiles, view, dispatch, sinkId }: Props) {
+export function VideoGrid({ participants, remoteStreams, localCamera, localScreens, tiles, view, dispatch, sinkId, onStopShare }: Props) {
   const people = new Map(participants.map((p) => [p.id, p]));
   // fontes de som cujo play() o navegador bloqueou (precisa de um gesto); `retry` refaz o play() dentro do clique
   const [blocked, setBlocked] = useState<string[]>([]);
@@ -41,42 +46,45 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
   );
 
   const cameraOf = (t: Tile) => (t.self ? localCamera : (remoteStreams[t.peerId]?.camera ?? null));
-  const screenOf = (t: Tile) => (t.self ? localScreen : (remoteStreams[t.peerId]?.screen ?? null));
+  const screenOf = (t: Tile) => {
+    if (t.slot === null) return null;
+    return t.self ? (localScreens[t.slot] ?? null) : (remoteStreams[t.peerId]?.screens?.[t.slot] ?? null);
+  };
 
   const sound = (key: string) => ({ muted: view.muted.includes(key), volume: volumeOf(view, key) });
   // mexer no volume de uma fonte silenciada volta a ouvir
-  const setVolume = (key: string) => (volume: number) => {
-    dispatch({ type: 'volume', key, volume });
-    if (volume > 0 && view.muted.includes(key)) dispatch({ type: 'toggleMuted', key });
-  };
+  const setVolume = (key: string) => (volume: number) => applyVolume(view, dispatch, key, volume);
 
   const render = (t: Tile) => {
     const p = people.get(t.peerId);
     if (!p) return null;
-    const voiceKey = audioKey(t.id, 'camera');
-    const tabKey = audioKey(t.id, 'screen');
+    const sid = screenIdOf(t);
+    const vKey = voiceKey(t.peerId);
+    const sKey = sid ? screenKey(sid) : '';
     return (
       <VideoTile
         key={t.id}
+        kind={t.kind}
         name={t.name}
         label={tileLabel(t)}
         isSelf={t.self}
         conn={p.conn}
         camera={cameraOf(t)}
         screen={screenOf(t)}
+        slot={t.slot}
         audioOn={p.audio}
         videoOn={p.video}
-        sharing={t.sharing}
         showScreen={showsScreen(t, view)}
         selected={view.selected === t.id}
-        voice={sound(voiceKey)}
-        tab={sound(tabKey)}
-        onToggleVoice={() => dispatch({ type: 'toggleMuted', key: voiceKey })}
-        onVoiceVolume={setVolume(voiceKey)}
-        onToggleTab={() => dispatch({ type: 'toggleMuted', key: tabKey })}
-        onTabVolume={setVolume(tabKey)}
-        onOpenScreen={() => dispatch({ type: 'openScreen', id: t.id })}
-        onCloseScreen={() => dispatch({ type: 'closeScreen', id: t.id })}
+        voice={sound(vKey)}
+        tab={sid ? sound(sKey) : { muted: true, volume: 1 }}
+        onToggleVoice={() => dispatch({ type: 'toggleMuted', key: vKey })}
+        onVoiceVolume={setVolume(vKey)}
+        onToggleTab={() => sid && dispatch({ type: 'toggleMuted', key: sKey })}
+        onTabVolume={(v) => sid && setVolume(sKey)(v)}
+        onOpenScreen={() => sid && dispatch({ type: 'openScreen', id: sid })}
+        onCloseScreen={() => sid && dispatch({ type: 'closeScreen', id: sid })}
+        onStopShare={() => t.slot !== null && onStopShare(t.slot)}
         onHide={() => dispatch({ type: 'toggleHidden', id: t.id })}
         onToggleSelect={() => dispatch({ type: 'select', id: t.id })}
       />
@@ -102,6 +110,8 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
       {visible.map(render)}
     </div>
   );
+
+  const remote = tiles.filter((t) => !t.self);
 
   return (
     <div className="stage-tiles">
@@ -129,41 +139,43 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
       <div className="tiles-off" aria-hidden="true">
         {off.map(render)}
       </div>
-      {/* um <audio> por fonte de som remota (voz e som da aba), num lugar fixo: layout, fechar e selecionar não o tocam */}
+      {/* um <audio> por fonte de som remota (voz de cada pessoa e som da aba de cada tela), num lugar fixo:
+          layout, fechar e selecionar não o tocam */}
       <div className="audio-sink" aria-hidden="true">
-        {tiles
-          .filter((t) => !t.self)
-          .flatMap((t) => {
-            const voiceKey = audioKey(t.id, 'camera');
-            const tabKey = audioKey(t.id, 'screen');
-            const items = [
+        {remote
+          .filter((t) => t.kind === 'person')
+          .map((t) => {
+            const key = voiceKey(t.peerId);
+            return (
               <RemoteAudio
-                key={voiceKey}
-                id={voiceKey}
+                key={key}
+                id={key}
                 stream={cameraOf(t)}
-                muted={view.muted.includes(voiceKey)}
-                volume={volumeOf(view, voiceKey)}
+                muted={view.muted.includes(key)}
+                volume={volumeOf(view, key)}
                 sinkId={sinkId}
                 retry={retry}
                 onBlocked={onBlocked}
-              />,
-            ];
-            if (t.sharing) {
-              items.push(
-                <RemoteAudio
-                  key={tabKey}
-                  id={tabKey}
-                  // o som da aba só toca enquanto a tela está aberta: fechar a tela para de ouvir também
-                  stream={showsScreen(t, view) ? screenOf(t) : null}
-                  muted={view.muted.includes(tabKey)}
-                  volume={volumeOf(view, tabKey)}
-                  sinkId={sinkId}
-                  retry={retry}
-                  onBlocked={onBlocked}
-                />,
-              );
-            }
-            return items;
+              />
+            );
+          })}
+        {remote
+          .filter((t) => t.slot !== null)
+          .map((t) => {
+            const key = screenKey(screenIdOf(t)!);
+            return (
+              <RemoteAudio
+                key={key}
+                id={key}
+                // o som da aba só toca enquanto a tela está aberta: fechar a tela para de ouvir também
+                stream={showsScreen(t, view) ? screenOf(t) : null}
+                muted={view.muted.includes(key)}
+                volume={volumeOf(view, key)}
+                sinkId={sinkId}
+                retry={retry}
+                onBlocked={onBlocked}
+              />
+            );
           })}
       </div>
     </div>

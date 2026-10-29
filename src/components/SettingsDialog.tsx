@@ -81,9 +81,13 @@ export function SettingsDialog({ open, onClose, devices, quality, inUse, partici
       }}
     >
       <div ref={card} className="sd-card" role="dialog" aria-modal="true" aria-label="Configurações" tabIndex={-1}>
-        <h2 className="sd-title">Configurações</h2>
-        <p className="sd-help">A troca vale na hora e fica lembrada neste navegador.</p>
+        <header className="sd-header">
+          <h2 className="sd-title">Configurações</h2>
+          <p className="sd-help">A troca vale na hora e fica lembrada neste navegador.</p>
+        </header>
 
+        {/* só o miolo rola: título e "Fechar" ficam sempre à vista */}
+        <div className="sd-body">
         <h3 className="sd-subtitle">Áudio</h3>
 
         <div className="sd-field">
@@ -125,12 +129,13 @@ export function SettingsDialog({ open, onClose, devices, quality, inUse, partici
         </div>
 
         <TransmissionSettings api={quality} inUse={inUse} participants={participants} sharing={sharing} />
+        </div>
 
-        <div className="sd-actions">
+        <footer className="sd-actions">
           <button type="button" className="primary" onClick={onClose}>
             Fechar
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   );

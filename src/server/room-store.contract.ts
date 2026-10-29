@@ -154,6 +154,45 @@ export function describeRoomStore(label: string, make: (now: () => number) => Ro
       });
     });
 
+    describe('screenSlots (várias telas)', () => {
+      it('join zera: sharing false e screenSlots 0, para quem entra e para quem já estava', async () => {
+        const a = await store.join(room, 'Ana');
+        expect(a.participants.find((p) => p.id === a.peerId)).toMatchObject({ sharing: false, screenSlots: 0 });
+        const b = await store.join(room, 'Beto');
+        expect(b.participants.map((p) => [p.sharing, p.screenSlots])).toEqual([[false, 0], [false, 0]]);
+      });
+
+      it('setState com screenSlots guarda a máscara, deriva sharing e o evento state carrega os dois', async () => {
+        const a = await store.join(room, 'Ana');
+        const b = await store.join(room, 'Beto');
+        await store.setState(room, a.peerId, { audio: true, video: true, sharing: false, screenSlots: 5 });
+        const { events } = await store.events(room, b.peerId, b.cursor);
+        expect(events.find((e) => e.type === 'state')?.payload).toEqual({ audio: true, video: true, sharing: true, screenSlots: 5 });
+        const me = (await store.join(room, 'Cris')).participants.find((p) => p.id === a.peerId);
+        expect(me).toMatchObject({ sharing: true, screenSlots: 5 });
+      });
+
+      it('só sharing: true vira screenSlots 1, e false volta a 0', async () => {
+        const a = await store.join(room, 'Ana');
+        await store.setState(room, a.peerId, { audio: true, video: true, sharing: true });
+        let me = (await store.join(room, 'Beto')).participants.find((p) => p.id === a.peerId);
+        expect(me).toMatchObject({ sharing: true, screenSlots: 1 });
+        await store.setState(room, a.peerId, { audio: true, video: true, sharing: false });
+        me = (await store.join(room, 'Cris')).participants.find((p) => p.id === a.peerId);
+        expect(me).toMatchObject({ sharing: false, screenSlots: 0 });
+      });
+
+      it('screenSlots manda sobre sharing inconsistente; inválido cai em sharing', async () => {
+        const a = await store.join(room, 'Ana');
+        await store.setState(room, a.peerId, { audio: true, video: true, sharing: true, screenSlots: 0 });
+        let me = (await store.join(room, 'Beto')).participants.find((p) => p.id === a.peerId);
+        expect(me).toMatchObject({ sharing: false, screenSlots: 0 });
+        await store.setState(room, a.peerId, { audio: true, video: true, sharing: true, screenSlots: 99 });
+        me = (await store.join(room, 'Cris')).participants.find((p) => p.id === a.peerId);
+        expect(me).toMatchObject({ sharing: true, screenSlots: 1 });
+      });
+    });
+
     describe('token e authenticate', () => {
       it('join devolve um token distinto por peer', async () => {
         const a = await store.join(room, 'Ana');

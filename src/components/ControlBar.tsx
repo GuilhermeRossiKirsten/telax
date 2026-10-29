@@ -6,7 +6,10 @@ type Props = {
   micOn: boolean;
   camOn: boolean;
   sharing: boolean;
-  /** a tela compartilhada está levando o som da aba */
+  /** quantas telas a pessoa compartilha agora e se ainda cabe outra */
+  screenCount: number;
+  canAddScreen: boolean;
+  /** alguma tela compartilhada está levando o som da aba */
   sharingAudio: boolean;
   hasMic: boolean;
   hasCam: boolean;
@@ -14,7 +17,9 @@ type Props = {
   restarting: boolean;
   onMic(): void;
   onCam(): void;
+  /** adiciona uma tela (o navegador abre o seletor) */
   onScreen(): void;
+  onStopScreens(): void;
   onPanel(): void;
   onSettings(): void;
   onRestart(): void;
@@ -72,15 +77,17 @@ export function ControlBar(p: Props) {
         icon="screen"
         label="Tela"
         pressed={p.sharing}
+        disabled={!p.canAddScreen}
         title={
-          p.sharing
-            ? p.sharingAudio
-              ? 'Parar compartilhamento (o som da aba está sendo enviado)'
-              : 'Parar compartilhamento (sem som: ao escolher uma aba, marque "Compartilhar áudio da guia")'
-            : 'Compartilhar tela ou aba (marque "Compartilhar áudio" para enviar o som da aba)'
+          !p.canAddScreen
+            ? `Limite de ${p.screenCount} telas ao mesmo tempo: pare uma para compartilhar outra`
+            : p.sharing
+              ? `Compartilhar mais uma tela (${p.screenCount} agora${p.sharingAudio ? '; o som da aba está sendo enviado' : ''})`
+              : 'Compartilhar tela ou aba (marque "Compartilhar áudio" para enviar o som da aba)'
         }
         onClick={p.onScreen}
       />
+      {p.sharing && <Btn icon="screenOff" label="Parar compartilhamento" title="Parar todas as telas que você compartilha" onClick={p.onStopScreens} />}
       <Btn icon="panel" label="Painel" pressed={p.panelOpen} title="Mostrar ou ocultar o painel lateral" onClick={p.onPanel} />
       <Btn icon="settings" label="Configurações" title="Escolher microfone e saída de áudio" onClick={p.onSettings} />
       <Btn

@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PeerManager, type ConnState, type SendQuality } from '@/lib/peer-manager';
+import { PeerManager, type ConnState, type LocalTracks, type SendQuality } from '@/lib/peer-manager';
+import { MAX_SCREENS } from '@/lib/screens';
 import { createSignalingClient, type SignalingStatus } from '@/lib/signaling-client';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, SignalData } from '@/lib/types';
-import type { LocalTracks } from './use-local-media';
 
 export type Participant = PeerInfo & { conn: ConnState | 'self' };
-export type RemoteStreams = { camera: MediaStream; screen: MediaStream };
+/** `screens` tem sempre MAX_SCREENS streams estáveis (um por slot de tela, cada um com [vídeo, som da aba]). */
+export type RemoteStreams = { camera: MediaStream; screens: MediaStream[] };
 export type ChatMessage = { id: string; from: string; name: string; text: string; at: number };
 export type RoomFile = {
   id: string;
@@ -126,11 +127,11 @@ export function useRoom(args: {
             if (disposed) return;
             let entry = streamMap.get(id);
             if (!entry) {
-              entry = { camera: new MediaStream(), screen: new MediaStream() };
+              entry = { camera: new MediaStream(), screens: Array.from({ length: MAX_SCREENS }, () => new MediaStream()) };
               streamMap.set(id, entry);
             }
             syncStream(entry.camera, [t.audio, t.camera]);
-            syncStream(entry.screen, [t.screen, t.screenAudio]);
+            entry.screens.forEach((stream, i) => syncStream(stream, [t.screens[i]?.video, t.screens[i]?.audio]));
             const shared = entry;
             setStreams((s) => ({ ...s, [id]: { ...shared } }));
           },

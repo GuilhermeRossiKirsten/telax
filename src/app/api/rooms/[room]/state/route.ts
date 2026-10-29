@@ -1,9 +1,11 @@
-import { invalid, isBool, json, postRoute } from '@/server/http';
+import { parseMediaState } from '@/lib/validation';
+import { invalid, json, postRoute } from '@/server/http';
 
 export const dynamic = 'force-dynamic';
 
 export const POST = postRoute(async (store, room, body) => {
-  if (!isBool(body.audio) || !isBool(body.video) || !isBool(body.sharing)) return invalid();
-  await store.setState(room, body.from as string, { audio: body.audio, video: body.video, sharing: body.sharing });
+  const media = parseMediaState(body);
+  if (!media) return invalid();
+  await store.setState(room, body.from as string, media);
   return json({ ok: true });
 }, 'from');

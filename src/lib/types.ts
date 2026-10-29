@@ -4,10 +4,17 @@ export type PeerInfo = {
   joinedAt: number;
   audio: boolean;
   video: boolean;
+  /** compartilha alguma tela (`screenSlots > 0`) */
   sharing: boolean;
+  /** máscara de bits dos slots de tela ativos (ver src/lib/screens.ts) */
+  screenSlots: number;
 };
 
-export type PeerMediaState = Pick<PeerInfo, 'audio' | 'video' | 'sharing'>;
+/**
+ * Estado de mídia que o cliente informa. `screenSlots` é opcional: quem manda só `sharing` vale como uma tela
+ * (slot 0) ou nenhuma; se mandar `screenSlots`, ele manda e `sharing` é derivado dele.
+ */
+export type PeerMediaState = Pick<PeerInfo, 'audio' | 'video' | 'sharing'> & { screenSlots?: number };
 
 export type RoomEventType = 'join' | 'leave' | 'state' | 'chat' | 'signal' | 'restart';
 

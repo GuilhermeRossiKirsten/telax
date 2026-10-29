@@ -1,14 +1,33 @@
 import { FileAssembler, sendFile, type FileHeader } from './file-transfer';
 import { RestartQueue, isOfferer, isStale } from './negotiation';
+import { MAX_SCREENS } from './screens';
 import type { SignalData } from './types';
 
 export type ConnState = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
-/** `screenAudio`: som da aba/tela compartilhada, separado do microfone (4ª m-line). */
-type Slot = 'audio' | 'camera' | 'screen' | 'screenAudio';
-const SLOTS: Slot[] = ['audio', 'camera', 'screen', 'screenAudio'];
-type RemoteTracks = Partial<Record<Slot, MediaStreamTrack>>;
-type LocalTracks = Record<Slot, MediaStreamTrack | null>;
+/**
+ * Uma m-line por faixa, sempre nesta ordem (quem responde adota pela posição):
+ * audio, camera, screen0, screenAudio0, screen1, screenAudio1, ... (MAX_SCREENS telas, cada uma com o som da aba).
+ */
+type Slot = 'audio' | 'camera' | `screen${number}` | `screenAudio${number}`;
+const SLOTS: Slot[] = [
+  'audio',
+  'camera',
+  ...Array.from({ length: MAX_SCREENS }, (_, i) => [`screen${i}` as const, `screenAudio${i}` as const]).flat(),
+];
+const SLOT_KIND: Record<Slot, 'audio' | 'video'> = Object.fromEntries(
+  SLOTS.map((s) => [s, s === 'camera' || s.startsWith('screen') && !s.startsWith('screenAudio') ? 'video' : 'audio']),
+) as Record<Slot, 'audio' | 'video'>;
+
+/** Faixas locais: `screens` tem uma posição por slot de tela (posição vazia = nada compartilhado ali). */
+export type ScreenTracks = { video: MediaStreamTrack | null; audio: MediaStreamTrack | null };
+export type LocalTracks = { audio: MediaStreamTrack | null; camera: MediaStreamTrack | null; screens: ScreenTracks[] };
+/** Faixas recebidas de um par: `screens` sempre tem MAX_SCREENS posições (objeto vazio onde nada chegou). */
+export type RemoteTracks = {
+  audio?: MediaStreamTrack;
+  camera?: MediaStreamTrack;
+  screens: Array<{ video?: MediaStreamTrack; audio?: MediaStreamTrack }>;
+};
 
 const DISCONNECT_GRACE_MS = 5000;
 const RETRY_BASE_MS = 1000;
@@ -22,7 +41,10 @@ const noop = () => {};
 export type SendQualityEntry = { maxBitrate?: number; maxFramerate?: number };
 export type SendQuality = { camera?: SendQualityEntry; screen?: SendQualityEntry };
 type QualitySlot = 'camera' | 'screen';
-const QUALITY_SLOTS: QualitySlot[] = ['camera', 'screen'];
+/** Quais slots recebem qual limite: a câmera só o dela; a entrada `screen` vale para TODOS os vídeos de tela. */
+const qualityOf = (slot: Slot): QualitySlot | null =>
+  slot === 'camera' ? 'camera' : /^screen\d+$/.test(slot) ? 'screen' : null;
+const QUALITY_SLOTS: Slot[] = SLOTS.filter((s) => qualityOf(s) !== null);
 
 const positiveInt = (n: unknown): number | undefined => {
   if (typeof n !== 'number' || !Number.isFinite(n)) return undefined;
@@ -63,7 +85,7 @@ type Entry = {
   /** Sessão corrente: gerada pelo offerer a cada PC; quem responde copia da offer. */
   sid?: number;
   pending: Array<{ sid: number; candidate: RTCIceCandidateInit }>;
-  remoteTracks: RemoteTracks;
+  remoteTracks: Partial<Record<Slot, MediaStreamTrack>>;
   sendChain: Promise<void>;
   everConnected: boolean;
   attempts: number;
@@ -78,7 +100,7 @@ export class PeerManager {
   private peers = new Map<string, Entry>();
   private gen: number;
   private queue = new RestartQueue(2);
-  private local: LocalTracks = { audio: null, camera: null, screen: null, screenAudio: null };
+  private local: LocalTracks = { audio: null, camera: null, screens: [] };
   private closed = false;
   /** Último limite pedido; null enquanto ninguém pediu (aí não se mexe nos parâmetros dos senders). */
   private quality: SendQuality | null = null;
@@ -90,15 +112,38 @@ export class PeerManager {
   }
 
   setLocalTracks(tracks: LocalTracks): void {
-    this.local = { ...tracks };
+    this.local = { audio: tracks.audio, camera: tracks.camera, screens: [...tracks.screens] };
     for (const e of this.peers.values()) this.applyLocalTracks(e);
+  }
+
+  /** A faixa que o slot deve enviar agora (null = nada). */
+  private trackFor(slot: Slot): MediaStreamTrack | null {
+    if (slot === 'audio') return this.local.audio;
+    if (slot === 'camera') return this.local.camera;
+    const i = Number(slot.replace(/\D/g, ''));
+    const screen = this.local.screens[i];
+    return (slot.startsWith('screenAudio') ? screen?.audio : screen?.video) ?? null;
+  }
+
+  /** O que o par nos mandou, no formato público (sempre MAX_SCREENS posições de tela). */
+  private remoteView(e: Entry): RemoteTracks {
+    const out: RemoteTracks = { screens: Array.from({ length: MAX_SCREENS }, () => ({})) };
+    if (e.remoteTracks.audio) out.audio = e.remoteTracks.audio;
+    if (e.remoteTracks.camera) out.camera = e.remoteTracks.camera;
+    for (let i = 0; i < MAX_SCREENS; i++) {
+      const video = e.remoteTracks[`screen${i}` as Slot];
+      const audio = e.remoteTracks[`screenAudio${i}` as Slot];
+      if (video) out.screens[i].video = video;
+      if (audio) out.screens[i].audio = audio;
+    }
+    return out;
   }
 
   /** Limita bitrate/fps da câmera e da tela enviadas a todos os pares (RTCRtpSender.setParameters). */
   setSendQuality(q: SendQuality): void {
     this.quality = { camera: q.camera && { ...q.camera }, screen: q.screen && { ...q.screen } };
     for (const e of this.peers.values()) {
-      for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, slot, false);
+      for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, qualityOf(slot)!, false);
     }
   }
 
@@ -191,12 +236,8 @@ export class PeerManager {
     if (e.offerer) {
       // Só o offerer cria os transceivers: o navegador não reaproveita os de addTransceiver ao
       // aplicar uma offer, então quem responde adota os que a offer cria (adoptTransceivers).
-      e.tx = {
-        audio: pc.addTransceiver('audio', { direction: 'sendrecv' }),
-        camera: pc.addTransceiver('video', { direction: 'sendrecv' }),
-        screen: pc.addTransceiver('video', { direction: 'sendrecv' }),
-        screenAudio: pc.addTransceiver('audio', { direction: 'sendrecv' }),
-      };
+      e.tx = {};
+      for (const slot of SLOTS) e.tx[slot] = pc.addTransceiver(SLOT_KIND[slot], { direction: 'sendrecv' });
       this.applyLocalTracks(e);
       this.attachChannel(e, pc.createDataChannel('files'));
     } else {
@@ -213,7 +254,7 @@ export class PeerManager {
       const slot = this.slotOf(e, ev.transceiver);
       if (!slot) return;
       e.remoteTracks[slot] = ev.track;
-      this.opts.onRemoteTracks(e.id, { ...e.remoteTracks });
+      this.opts.onRemoteTracks(e.id, this.remoteView(e));
     };
     pc.onconnectionstatechange = () => {
       if (e.pc === pc) this.onState(e, pc.connectionState);
@@ -269,7 +310,7 @@ export class PeerManager {
         e.everConnected = true;
         e.attempts = 0;
         this.report(e, 'connected');
-        for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, slot, true);
+        for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, qualityOf(slot)!, true);
         e.settle?.();
         break;
       case 'disconnected':
@@ -398,11 +439,12 @@ export class PeerManager {
       const sender = e.tx[slot]?.sender;
       if (!sender) continue;
       // depois do replaceTrack os parâmetros do sender podem ter sido resetados (ou ainda nem existir): reaplica
+      const kind = qualityOf(slot);
       sender
-        .replaceTrack(this.local[slot])
+        .replaceTrack(this.trackFor(slot))
         .catch(noop)
         .then(() => {
-          if (slot === 'camera' || slot === 'screen') this.applyQuality(sender, slot, true);
+          if (kind) this.applyQuality(sender, kind, true);
         });
     }
   }
