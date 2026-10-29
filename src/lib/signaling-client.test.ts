@@ -290,3 +290,128 @@ describe('envio', () => {
     t.client.stop();
   });
 });
+
+describe('espera longa (servidor segura a resposta)', () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const pollsOf = (calls: Array<{ route: string; url: URL; at: number }>) => calls.filter((c) => c.route === 'events');
+
+  it('o poll pede a espera longa: wait=8000', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pollsOf(t.calls)[0].url.searchParams.get('wait')).toBe('8000');
+    t.client.stop();
+  });
+
+  it('resposta LENTA vazia (o servidor esperou): o próximo poll sai na hora, sem mais 1 s de espera', async () => {
+    const t = setup({
+      join: () => ok(joinBody('p1')),
+      events: async () => {
+        await sleep(8000); // o servidor segurou a resposta até o prazo
+        return ok({ events: [], cursor: 5 });
+      },
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(8000);
+    await vi.advanceTimersByTimeAsync(8000);
+    const polls = pollsOf(t.calls);
+    expect(polls.length).toBeGreaterThanOrEqual(2);
+    const gap = polls[1].at - polls[0].at;
+    expect(gap).toBeGreaterThanOrEqual(8000);
+    expect(gap).toBeLessThan(8100); // com o piso antigo seria 9000
+    t.client.stop();
+  });
+
+  it('resposta com EVENTOS: processa e faz o próximo poll na hora, com o cursor novo', async () => {
+    const t = setup({
+      join: () => ok(joinBody('p1', 5)),
+      events: (call) => (call === 1 ? ok({ events: [ev(6), ev(7)], cursor: 7 }) : ok({ events: [], cursor: 7 })),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(20);
+    const polls = pollsOf(t.calls);
+    expect(polls.length).toBeGreaterThanOrEqual(2);
+    expect(polls[1].at - polls[0].at).toBeLessThan(50); // na hora (o piso seria 1000)
+    expect(polls[1].url.searchParams.get('since')).toBe('7');
+    expect(t.events.map((e) => e.seq)).toEqual([6, 7]);
+    t.client.stop();
+  });
+
+  it('resposta RÁPIDA e vazia (servidor antigo que ignora wait): piso de 1 s, nunca um laço quente', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const polls = pollsOf(t.calls);
+    expect(polls.length).toBeLessThanOrEqual(12);
+    const gaps = polls.slice(1).map((c, i) => c.at - polls[i].at);
+    expect(gaps.every((g) => g >= 1000)).toBe(true);
+    t.client.stop();
+  });
+
+  it('stop aborta na hora o poll pendurado e não deixa nenhum timer vivo', async () => {
+    let signal: AbortSignal | undefined;
+    const t = setup({
+      join: () => ok(joinBody('p1')),
+      events: (_call, _url, init) =>
+        new Promise<Response>((_, reject) => {
+          signal = init.signal as AbortSignal;
+          signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(10); // poll pendurado (o servidor está esperando)
+    expect(signal).toBeDefined();
+    expect(signal!.aborted).toBe(false);
+    t.client.stop();
+    expect(signal!.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(t.statuses).not.toContain('reconnecting');
+    expect(pollsOf(t.calls)).toHaveLength(1);
+  });
+
+  it('leave aborta o poll em andamento e isso não conta como falha de rede', async () => {
+    let signal: AbortSignal | undefined;
+    const t = setup({
+      join: () => ok(joinBody('p1')),
+      events: (_call, _url, init) =>
+        new Promise<Response>((_, reject) => {
+          signal = init.signal as AbortSignal;
+          signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+      leave: () => ok({ ok: true }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(10);
+    t.client.leave();
+    expect(signal!.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.statuses).not.toContain('reconnecting');
+    expect(t.calls.some((c) => c.route === 'leave')).toBe(true);
+    t.client.stop();
+  });
+});
+
+describe('envio em lote', () => {
+  it('signals posta { from, token, items } em uma única requisição', async () => {
+    const t = setup({ join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }), signal: () => ok({ ok: true }) });
+    await t.client.start();
+    const items = [
+      { to: 'p2', data: { gen: 0, kind: 'candidate' as const, sid: 1, candidate: { candidate: 'a' } } },
+      { to: 'p3', data: { gen: 0, kind: 'candidate' as const, sid: 2, candidate: { candidate: 'b' } } },
+    ];
+    await t.client.signals(items);
+    const posts = t.calls.filter((c) => c.route === 'signal');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0].init.body))).toEqual({ from: 'p1', token: 'tok-p1', items });
+    t.client.stop();
+  });
+
+  it('signals sem ter entrado rejeita com "not joined", como o signal', async () => {
+    const t = setup({ join: () => new Promise<Response>(() => {}) });
+    void t.client.start();
+    await expect(t.client.signals([{ to: 'p2', data: { gen: 0, kind: 'reset' } }])).rejects.toThrow('not joined');
+    t.client.stop();
+  });
+});

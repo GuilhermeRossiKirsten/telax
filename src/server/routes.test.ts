@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { POST as chat } from '@/app/api/rooms/[room]/chat/route';
 import { GET as events } from '@/app/api/rooms/[room]/events/route';
 import { POST as join } from '@/app/api/rooms/[room]/join/route';
@@ -6,6 +6,26 @@ import { POST as leave } from '@/app/api/rooms/[room]/leave/route';
 import { POST as restart } from '@/app/api/rooms/[room]/restart/route';
 import { POST as signal } from '@/app/api/rooms/[room]/signal/route';
 import { POST as state } from '@/app/api/rooms/[room]/state/route';
+import { parseWait } from '@/server/http';
+
+const resetStore = () => {
+  (globalThis as unknown as { __telaxStore?: unknown }).__telaxStore = undefined;
+};
+/** Roda `fn` com MAX_PEERS definido (ou removido) e devolve o ambiente ao que era, com o store recriado. */
+async function withMaxPeers<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const before = process.env.MAX_PEERS;
+  if (value === undefined) delete process.env.MAX_PEERS;
+  else process.env.MAX_PEERS = value;
+  resetStore();
+  try {
+    return await fn();
+  } finally {
+    if (before === undefined) delete process.env.MAX_PEERS;
+    else process.env.MAX_PEERS = before;
+    resetStore();
+  }
+}
+afterEach(resetStore);
 
 let n = 0;
 const newRoom = () => `rota-${++n}`;
@@ -49,12 +69,21 @@ describe('join', () => {
     expect(JSON.stringify(body.participants)).not.toContain(body.token);
   });
 
-  it('responde 409 room_full no 9º participante', async () => {
-    const room = newRoom();
-    for (let i = 0; i < 8; i++) expect((await doJoin(room, `p${i}`)).res.status).toBe(200);
-    const { res, body } = await doJoin(room, 'extra');
-    expect(res.status).toBe(409);
-    expect(body.error).toBe('room_full');
+  it('SEM MAX_PEERS não há limite: o 9º e o 30º participantes entram (200)', async () => {
+    await withMaxPeers(undefined, async () => {
+      const room = newRoom();
+      for (let i = 0; i < 30; i++) expect((await doJoin(room, `p${i}`)).res.status).toBe(200);
+    });
+  });
+
+  it('com MAX_PEERS=8 (limite opcional) responde 409 room_full no 9º participante', async () => {
+    await withMaxPeers('8', async () => {
+      const room = newRoom();
+      for (let i = 0; i < 8; i++) expect((await doJoin(room, `p${i}`)).res.status).toBe(200);
+      const { res, body } = await doJoin(room, 'extra');
+      expect(res.status).toBe(409);
+      expect(body.error).toBe('room_full');
+    });
   });
 
   it('trata o nome da sala sem diferenciar maiúsculas', async () => {
@@ -101,6 +130,213 @@ describe('events', () => {
     expect(wrong.res.status).toBe(410);
     expect(wrong.body.error).toBe('gone');
     expect((await poll(room, a.peerId, 0, null)).res.status).toBe(400);
+  });
+});
+
+describe('events com espera longa (wait)', () => {
+  const pollWait = (room: string, p: { peerId: string; token: string }, since: number, wait: string | number, signal?: AbortSignal) =>
+    events(new Request(`http://t/api/rooms/x/events?peerId=${p.peerId}&since=${since}&token=${encodeURIComponent(p.token)}&wait=${wait}`, { signal }), ctx(room));
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('parseWait: só inteiro de 0 a 8000; o resto vira 0 (imediato) e o excesso é cortado em 8000', () => {
+    expect([undefined, null, '', 'abc', '-5', '1.5', '0', '1e3'].map((v) => parseWait(v as string | null | undefined))).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(parseWait('2500')).toBe(2500);
+    expect(parseWait('8000')).toBe(8000);
+    expect(parseWait('999999')).toBe(8000);
+  });
+
+  it('devolve ANTES do prazo quando chega um evento durante a espera', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const t0 = Date.now();
+    const pending = pollWait(room, a, (await poll(room, a.peerId, a.cursor, a.token)).body.cursor, 1500);
+    await sleep(300);
+    await chat(post('chat', { from: b.peerId, token: b.token, text: 'acorda' }), ctx(room));
+    const res = await pending;
+    const elapsed = Date.now() - t0;
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.events.map((e: Ev) => e.type)).toEqual(['chat']);
+    expect(elapsed).toBeLessThan(1300); // bem antes dos 1500 ms (a espera checa a cada ~700 ms)
+  });
+
+  it('sem eventos devolve { events: [] } perto do prazo, com o cursor', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const t0 = Date.now();
+    const res = await pollWait(room, a, a.cursor, 900);
+    const elapsed = Date.now() - t0;
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.events).toEqual([]);
+    expect(body.cursor).toBe(a.cursor);
+    expect(elapsed).toBeGreaterThanOrEqual(800);
+    expect(elapsed).toBeLessThan(2200);
+  });
+
+  it('já havendo eventos novos, responde na hora (sem esperar)', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    await doJoin(room, 'Beto');
+    const t0 = Date.now();
+    const res = await pollWait(room, a, a.cursor, 5000);
+    expect(Date.now() - t0).toBeLessThan(400);
+    expect((await res.json()).events.map((e: Ev) => e.type)).toEqual(['join']);
+  });
+
+  it('sem wait (ou wait inválido) continua imediato', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    for (const w of ['abc', '-5', '1.5', '0']) {
+      const t0 = Date.now();
+      const res = await pollWait(room, a, a.cursor, w);
+      expect(res.status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(400);
+    }
+    const t0 = Date.now();
+    expect((await poll(room, a.peerId, a.cursor, a.token)).res.status).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(400);
+  });
+
+  it('wait gigante é cortado (não quebra): acorda com o evento', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const cursor = (await poll(room, a.peerId, a.cursor, a.token)).body.cursor;
+    const pending = pollWait(room, a, cursor, 999_999);
+    await sleep(200);
+    await chat(post('chat', { from: b.peerId, token: b.token, text: 'oi' }), ctx(room));
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect((await res.json()).events.map((e: Ev) => e.type)).toEqual(['chat']);
+  });
+
+  it('peer inexistente ou token errado → 410 na hora, mesmo com wait', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const t0 = Date.now();
+    expect((await pollWait(room, { peerId: 'fantasma', token: 'x' }, 0, 5000)).status).toBe(410);
+    expect((await pollWait(room, { peerId: a.peerId, token: b.token }, 0, 5000)).status).toBe(410);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it('se o peer some durante a espera (leave), responde 410', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const cursor = (await poll(room, a.peerId, a.cursor, a.token)).body.cursor;
+    const pending = pollWait(room, a, cursor, 3000);
+    await sleep(200);
+    await leave(post('leave', { peerId: a.peerId, token: a.token }), ctx(room));
+    const res = await pending;
+    expect(res.status).toBe(410);
+  });
+
+  it('o cliente que aborta a requisição encerra a espera sem erro', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const ac = new AbortController();
+    const t0 = Date.now();
+    const pending = pollWait(room, a, a.cursor, 5000, ac.signal);
+    await sleep(200);
+    ac.abort();
+    await pending; // não lança
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+});
+
+describe('signal em lote', () => {
+  const cand = (i: number) => ({ gen: 0, kind: 'candidate', sid: 7, candidate: { candidate: `c${i}` } });
+  const sendBatch = (room: string, a: { peerId: string; token: string }, items: unknown) =>
+    signal(post('signal', { from: a.peerId, token: a.token, items }), ctx(room));
+
+  it('aplica todos, EM ORDEM, e a resposta é igual à do formato único', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const res = await sendBatch(room, a, [0, 1, 2].map((i) => ({ to: b.peerId, data: cand(i) })));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    const got = await signalsFor(room, b);
+    expect(got.map((e) => (e.payload as { candidate: { candidate: string } }).candidate.candidate)).toEqual(['c0', 'c1', 'c2']);
+  });
+
+  it('um item inválido derruba o pedido inteiro (400) e NADA é aplicado', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const items = [
+      { to: b.peerId, data: cand(0) },
+      { to: b.peerId, data: { gen: 0, kind: 'offer', sdp: 'x'.repeat(32 * 1024 + 1) } },
+      { to: b.peerId, data: cand(2) },
+    ];
+    const res = await sendBatch(room, a, items);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid');
+    expect(await signalsFor(room, b)).toHaveLength(0);
+    // item sem destinatário, com destinatário não-string ou sem data também
+    for (const bad of [{ data: cand(0) }, { to: 5, data: cand(0) }, { to: b.peerId }, { to: b.peerId, data: null }, 'texto', null]) {
+      expect((await sendBatch(room, a, [{ to: b.peerId, data: cand(1) }, bad])).status).toBe(400);
+    }
+    expect(await signalsFor(room, b)).toHaveLength(0);
+  });
+
+  it('aceita 50 itens e rejeita 51; lista vazia e não-lista → 400', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const many = (k: number) => Array.from({ length: k }, (_, i) => ({ to: b.peerId, data: cand(i) }));
+    expect((await sendBatch(room, a, many(50))).status).toBe(200);
+    expect(await signalsFor(room, b)).toHaveLength(50);
+    expect((await sendBatch(room, a, many(51))).status).toBe(400);
+    expect(await signalsFor(room, b)).toHaveLength(50); // os 51 não foram aplicados
+    expect((await sendBatch(room, a, [])).status).toBe(400);
+    expect((await sendBatch(room, a, 'x')).status).toBe(400);
+    expect((await sendBatch(room, a, { to: b.peerId, data: cand(0) })).status).toBe(400);
+  });
+
+  it('não aceita os dois formatos misturados (items junto com to/data) → 400', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const res = await signal(
+      post('signal', { from: a.peerId, token: a.token, to: b.peerId, data: cand(0), items: [{ to: b.peerId, data: cand(1) }] }),
+      ctx(room),
+    );
+    expect(res.status).toBe(400);
+    expect(await signalsFor(room, b)).toHaveLength(0);
+  });
+
+  it('destinatário ausente num item é ignorado em silêncio; os demais chegam', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const res = await sendBatch(room, a, [
+      { to: b.peerId, data: cand(0) },
+      { to: 'ninguem', data: cand(1) },
+      { to: b.peerId, data: cand(2) },
+    ]);
+    expect(res.status).toBe(200);
+    expect(await signalsFor(room, b)).toHaveLength(2);
+  });
+
+  it('remetente com token errado → 410 e nada é entregue', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const res = await sendBatch(room, { peerId: a.peerId, token: b.token }, [{ to: b.peerId, data: cand(0) }]);
+    expect(res.status).toBe(410);
+    expect(await signalsFor(room, b)).toHaveLength(0);
+  });
+
+  it('o formato antigo { from, to, data } continua funcionando', async () => {
+    const room = newRoom();
+    const a = (await doJoin(room, 'Ana')).body;
+    const b = (await doJoin(room, 'Beto')).body;
+    const res = await signal(post('signal', { from: a.peerId, token: a.token, to: b.peerId, data: cand(9) }), ctx(room));
+    expect(res.status).toBe(200);
+    expect(await signalsFor(room, b)).toHaveLength(1);
   });
 });
 

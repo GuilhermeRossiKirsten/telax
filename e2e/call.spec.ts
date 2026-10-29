@@ -935,24 +935,18 @@ test('recarregar a aba reconecta sem deixar participante duplicado', async ({ br
   await beto.ctx.close();
 });
 
-test('o 9º participante vê "Sala cheia"', async ({ browser, request }) => {
-  const room = uniqueRoom('cheia');
-  for (let i = 0; i < 8; i++) {
+test('não há limite de pessoas por sala: do 9º em diante todos entram, sem "Sala cheia"', async ({ browser, request }) => {
+  const room = uniqueRoom('semlimite');
+  for (let i = 0; i < 9; i++) {
     const res = await request.post(`/api/rooms/${room}/join`, { data: { name: `bot${i}` } });
     expect(res.status()).toBe(200);
   }
+  // e um navegador de verdade entra por último (10º): vê os controles da reunião, não a tela de sala cheia
   const u = await newUser(browser);
   await enter(u, room, 'Nono');
-  await expect(u.page.locator('p[role="alert"]')).toContainText('Sala cheia');
-  // sem chamada, a câmera/microfone não podem ficar abertos (luz da câmera acesa)
-  await expect
-    .poll(() =>
-      u.page.evaluate(() => {
-        const streams = (window as unknown as { __streams: MediaStream[] }).__streams;
-        return streams.length > 0 && streams.every((s) => s.getTracks().every((t) => t.readyState === 'ended'));
-      }),
-    )
-    .toBe(true);
+  await expect(u.page.getByRole('navigation', { name: 'Controles da reunião' })).toBeVisible();
+  await expect(u.page.locator('p[role="alert"]')).toHaveCount(0);
+  await expect(u.page.getByText('Sala cheia')).toHaveCount(0);
   await u.ctx.close();
 });
 

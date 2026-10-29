@@ -125,3 +125,15 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Registro de honestidade: antes de reproduzir, eu e o fork E tratamos a falha como instabilidade do teste. O print do `error-context` mostrou o participante ausente por 20 s, o que não é lentidão.
 - Risco que ficou: o `$reduce` do Mongo é O(n≤500) por escrita (latência não medida em Atlas); o cliente ainda não detecta lacuna de eventos.
 - Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.
+
+## Documento de arquitetura, sons, economia da Vercel, sem limite de pessoas
+
+- `docs/ARQUITETURA.md` (16 seções, 15 diagramas Mermaid). Os diagramas foram VALIDADOS renderizando cada um no Mermaid 11 via Playwright: o primeiro passe achou 1 erro real (um `;` numa nota de sequência) que corrigi; depois 15/15 OK e conferi 2 por imagem.
+- Sons de entrada e saída (fork Z): Web Audio sintetizado (587→880 Hz entrar, 740→494 Hz sair, pico 0,06), opção nas Configurações (`telax:sounds`), 5 e2e que leem a frequência dos osciladores. Limite honesto: provam que o toque certo é disparado, não que sai pelo alto-falante.
+- Pedido do usuário: o app gasta muita Vercel (plano gratuito). Medi ANTES de mexer: 30 consultas `/events` em 30 s por pessoa (1/s) e 125 POSTs de sinal só para duas pessoas entrarem. Teste `request-budget.spec.ts` escrito primeiro e visto falhar (30 > 8 e 125 > 10).
+- Correções (2 forks em paralelo com contrato fixo): servidor (`/events?wait=` com espera longa de até 8 s via `peekEvents` só leitura; `/signal` em lote de 1..50; `MAX_PEERS` opcional) e cliente (poll imediato após resposta + piso de 250 ms; `createSignalBatcher` com candidatos em 80 ms e offer/answer imediatos; `signalTo` sem serializar por POST). Contrato validado contra Mongo REAL (161/161).
+- Depois: sala parada de 4 pessoas = 30 requisições/min no total (~450 invocações por pessoa-hora, antes ~3.600); entrada de 4 pessoas = 77 requisições (48 de sinal). Mesh e2e ficou mais rápido (19 s contra 28 s).
+- Pedido: retirar o limite de 8 pessoas. Feito (ausente = sem limite; `MAX_PEERS` opcional mantém o mecanismo e o 409). 25 joins simultâneos no contrato; 10 navegadores reais: todos se veem sem "Sala cheia", malha completa em ~70 s num só computador (CPU). Ruling: o 409/"Sala cheia" permanece só com `MAX_PEERS`.
+- Registro de honestidade: o ganho na Vercel é medido localmente; o consumo real na Vercel não foi verificado. O Atlas passa a receber ~1 leitura por 0,7 s por conexão aberta (as invocações caem, as leituras não).
+- Verificação final: tsc limpo; vitest 352 passed / 5 skipped; e2e 72/72; mesh 5/5; npm audit 0.
+- Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.

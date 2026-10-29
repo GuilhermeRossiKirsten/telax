@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_CANDIDATE, MAX_SDP, parseSignal } from './signal-validation';
+import { MAX_BATCH, MAX_CANDIDATE, MAX_SDP, parseSignal, parseSignalItems } from './signal-validation';
 
 const cand = { candidate: 'candidate:1 1 udp 1 1.2.3.4 5 typ host', sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'ab' };
 
@@ -57,5 +57,28 @@ describe('parseSignal rejeita', () => {
     ['usernameFragment > 256', { gen: 0, kind: 'candidate', candidate: { candidate: 'x', usernameFragment: 'u'.repeat(257) } }],
   ])('%s', (_label, raw) => {
     expect(parseSignal(raw)).toBeNull();
+  });
+});
+
+describe('parseSignalItems (lote de sinais)', () => {
+  const item = (to: string, i = 0) => ({ to, data: { gen: 0, kind: 'candidate', candidate: { candidate: `c${i}` }, evil: 1 } });
+
+  it('aceita de 1 a MAX_BATCH itens, reconstruindo cada sinal só com campos conhecidos', () => {
+    expect(MAX_BATCH).toBe(50);
+    const out = parseSignalItems([item('b', 0), item('c', 1)]);
+    expect(out).toEqual([
+      { to: 'b', data: { gen: 0, kind: 'candidate', candidate: { candidate: 'c0' } } },
+      { to: 'c', data: { gen: 0, kind: 'candidate', candidate: { candidate: 'c1' } } },
+    ]);
+    expect(parseSignalItems(Array.from({ length: MAX_BATCH }, (_, i) => item('b', i)))).toHaveLength(MAX_BATCH);
+  });
+
+  it('rejeita lista vazia, longa demais, não-lista e itens malformados (tudo ou nada)', () => {
+    expect(parseSignalItems([])).toBeNull();
+    expect(parseSignalItems(Array.from({ length: MAX_BATCH + 1 }, (_, i) => item('b', i)))).toBeNull();
+    for (const bad of [undefined, null, 'x', 1, {}, { to: 'b', data: item('b').data }]) expect(parseSignalItems(bad)).toBeNull();
+    for (const badItem of [null, 'x', {}, { to: 'b' }, { data: item('b').data }, { to: '', data: item('b').data }, { to: 5, data: item('b').data }, { to: 'b', data: { gen: -1, kind: 'offer' } }]) {
+      expect(parseSignalItems([item('b'), badItem])).toBeNull();
+    }
   });
 });

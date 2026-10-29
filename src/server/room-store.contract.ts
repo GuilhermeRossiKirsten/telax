@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SignalData } from '@/lib/types';
-import { MAX_EVENTS, MAX_PEERS, PEER_TTL_MS, RoomFullError, UnknownPeerError, type RoomStore } from './room-store';
+import { MAX_EVENTS, PEER_TTL_MS, RoomFullError, UnknownPeerError, type RoomStore, type RoomStoreOptions } from './room-store';
 
 const offer: SignalData = { gen: 0, kind: 'offer', sdp: 'v=0' };
 
@@ -11,7 +11,10 @@ const rejects = (fn: () => unknown) => expect((async () => fn())()).rejects;
  * Contrato que toda implementação de RoomStore cumpre. `make` recebe o relógio (ms) para que os
  * testes de expiração avancem o tempo sem esperar. Cada teste usa uma sala única.
  */
-export function describeRoomStore(label: string, make: (now: () => number) => RoomStore | Promise<RoomStore>) {
+export function describeRoomStore(
+  label: string,
+  make: (now: () => number, opts?: RoomStoreOptions) => RoomStore | Promise<RoomStore>,
+) {
   describe(`contrato do RoomStore: ${label}`, () => {
     let now = 1_000_000;
     let store: RoomStore;
@@ -33,19 +36,47 @@ export function describeRoomStore(label: string, make: (now: () => number) => Ro
         expect(b.participants.every((p) => p.name === 'Ana')).toBe(true);
       });
 
-      it('lança RoomFullError no 9º participante', async () => {
-        for (let i = 0; i < MAX_PEERS; i++) await store.join(room, `p${i}`);
-        await rejects(() => store.join(room, 'extra')).toThrow(RoomFullError);
+      it('SEM limite configurado entram 25 participantes, em sequência, sem erro', async () => {
+        for (let i = 0; i < 25; i++) await store.join(room, `p${i}`);
+        const last = await store.join(room, 'extra');
+        expect(last.participants).toHaveLength(26);
       });
 
-      it('com joins simultâneos entram exatamente 8 e o resto recebe RoomFullError', async () => {
-        const results = await Promise.allSettled(
-          Array.from({ length: 12 }, async (_, i) => store.join(room, `p${i}`)),
-        );
-        const ok = results.filter((r) => r.status === 'fulfilled');
-        const full = results.filter((r) => r.status === 'rejected' && r.reason instanceof RoomFullError);
-        expect(ok).toHaveLength(MAX_PEERS);
-        expect(full).toHaveLength(12 - MAX_PEERS);
+      it('SEM limite configurado 25 joins simultâneos entram todos', async () => {
+        const results = await Promise.allSettled(Array.from({ length: 25 }, async (_, i) => store.join(room, `p${i}`)));
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(25);
+      });
+
+      describe('com limite opcional (maxPeers)', () => {
+        let limited: RoomStore;
+        beforeEach(async () => {
+          limited = await make(() => now, { maxPeers: 8 });
+        });
+
+        it('lança RoomFullError no 9º participante', async () => {
+          for (let i = 0; i < 8; i++) await limited.join(room, `p${i}`);
+          await rejects(() => limited.join(room, 'extra')).toThrow(RoomFullError);
+        });
+
+        it('com joins simultâneos entram exatamente 8 e o resto recebe RoomFullError', async () => {
+          const results = await Promise.allSettled(
+            Array.from({ length: 12 }, async (_, i) => limited.join(room, `p${i}`)),
+          );
+          const ok = results.filter((r) => r.status === 'fulfilled');
+          const full = results.filter((r) => r.status === 'rejected' && r.reason instanceof RoomFullError);
+          expect(ok).toHaveLength(8);
+          expect(full).toHaveLength(4);
+        });
+
+        it('quem expirou libera a vaga', async () => {
+          const first = await limited.join(room, 'p0');
+          for (let i = 1; i < 8; i++) await limited.join(room, `p${i}`);
+          await rejects(() => limited.join(room, 'extra')).toThrow(RoomFullError);
+          now += PEER_TTL_MS + 1;
+          // ninguém consultou: todos expiraram, e a sala aceita de novo
+          const again = await limited.join(room, 'extra');
+          expect(again.participants.map((p) => p.id)).not.toContain(first.peerId);
+        });
       });
 
       it('avisa quem já está na sala com um evento join', async () => {
@@ -103,6 +134,64 @@ export function describeRoomStore(label: string, make: (now: () => number) => Ro
         const chats = events.filter((e) => e.type === 'chat');
         expect(chats).toHaveLength(30);
         expect(new Set(events.map((e) => e.seq)).size).toBe(events.length);
+      });
+    });
+
+    describe('peekEvents (leitura sem batimento)', () => {
+      it('devolve o mesmo que events(): filtra por cursor, destinatário e remetente', async () => {
+        const a = await store.join(room, 'Ana');
+        const b = await store.join(room, 'Beto');
+        const c = await store.join(room, 'Cris');
+        await store.chat(room, a.peerId, 'oi');
+        await store.signal(room, a.peerId, b.peerId, offer);
+        const viaPeek = await store.peekEvents(room, b.peerId, b.cursor);
+        const viaEvents = await store.events(room, b.peerId, b.cursor);
+        expect(viaPeek).toEqual(viaEvents);
+        expect(viaPeek.events.map((e) => e.type)).toEqual(['join', 'chat', 'signal']);
+        // o sinal de Ana para Beto não aparece para Cris
+        expect((await store.peekEvents(room, c.peerId, c.cursor)).events.some((e) => e.type === 'signal')).toBe(false);
+      });
+
+      it('não devolve ao remetente os próprios broadcasts', async () => {
+        const a = await store.join(room, 'Ana');
+        await store.join(room, 'Beto');
+        await store.chat(room, a.peerId, 'oi');
+        const { events } = await store.peekEvents(room, a.peerId, a.cursor);
+        expect(events.some((e) => e.type === 'chat')).toBe(false);
+      });
+
+      it('lança UnknownPeerError para peer inexistente, id malformado e peer expirado', async () => {
+        const a = await store.join(room, 'Ana');
+        await rejects(() => store.peekEvents(room, 'fantasma', 0)).toThrow(UnknownPeerError);
+        await rejects(() => store.peekEvents(room, `${a.peerId}.tokenHash`, 0)).toThrow(UnknownPeerError);
+        await rejects(() => store.peekEvents('sala-que-nao-existe', a.peerId, 0)).toThrow(UnknownPeerError);
+        now += PEER_TTL_MS + 1;
+        await rejects(() => store.peekEvents(room, a.peerId, 0)).toThrow(UnknownPeerError);
+      });
+
+      it('NÃO renova o lastSeen: quem só faz peek expira, quem faz events() continua vivo', async () => {
+        const a = await store.join(room, 'Ana');
+        const b = await store.join(room, 'Beto');
+        // Ana renova com events(); Beto só espia, sem nunca renovar
+        for (let i = 0; i < 4; i++) {
+          now += 6_000;
+          await store.events(room, a.peerId, a.cursor);
+          await (async () => store.peekEvents(room, b.peerId, b.cursor))().catch(() => undefined);
+        }
+        // 24 s depois do join: Beto (só peek) passou de 15 s sem batimento e foi varrido
+        const { events } = await store.events(room, a.peerId, a.cursor);
+        expect(events.some((e) => e.type === 'leave' && e.from === b.peerId)).toBe(true);
+        await rejects(() => store.events(room, b.peerId, 0)).toThrow(UnknownPeerError);
+        await store.authenticate(room, a.peerId, a.token);
+      });
+
+      it('não escreve nada: o cursor e o log ficam como estavam', async () => {
+        const a = await store.join(room, 'Ana');
+        await store.join(room, 'Beto');
+        const before = await store.peekEvents(room, a.peerId, 0);
+        const again = await store.peekEvents(room, a.peerId, 0);
+        expect(again).toEqual(before);
+        expect(again.cursor).toBe(before.cursor);
       });
     });
 

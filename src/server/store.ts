@@ -1,11 +1,19 @@
 import { MongoClient } from 'mongodb';
 import { MemoryRoomStore } from './memory-room-store';
 import { MongoRoomStore, type RoomDoc } from './mongo-room-store';
-import type { RoomStore } from './room-store';
+import type { RoomStore, RoomStoreOptions } from './room-store';
 
 const globalForStore = globalThis as unknown as { __telaxStore?: RoomStore };
 
 type Env = Record<string, string | undefined>;
+
+/** `MAX_PEERS`: inteiro positivo = limite de pessoas por sala; ausente, vazio ou inválido = SEM limite. */
+export function parseMaxPeers(raw: string | undefined): number | undefined {
+  const text = raw?.trim();
+  if (!text || !/^\d+$/.test(text)) return undefined;
+  const n = Number(text);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
 
 /**
  * Com `MONGODB_URI` as salas ficam no MongoDB e todas as instâncias do servidor (ex.: Vercel) enxergam as
@@ -13,7 +21,9 @@ type Env = Record<string, string | undefined>;
  */
 export function createStore(env: Env): RoomStore {
   const uri = env.MONGODB_URI?.trim();
-  if (!uri) return new MemoryRoomStore();
+  const maxPeers = parseMaxPeers(env.MAX_PEERS);
+  const opts: RoomStoreOptions = maxPeers === undefined ? {} : { maxPeers };
+  if (!uri) return new MemoryRoomStore(Date.now, opts);
   // Pool pequeno e conexões ociosas fechadas logo: cada instância serverless abre o seu próprio pool.
   const client = new MongoClient(uri, {
     maxPoolSize: 5,
@@ -21,7 +31,7 @@ export function createStore(env: Env): RoomStore {
     maxIdleTimeMS: 10_000,
     serverSelectionTimeoutMS: 5_000,
   });
-  return new MongoRoomStore(client.db(env.MONGODB_DB?.trim() || 'telax').collection<RoomDoc>('rooms'));
+  return new MongoRoomStore(client.db(env.MONGODB_DB?.trim() || 'telax').collection<RoomDoc>('rooms'), Date.now, opts);
 }
 
 /** Singleton em globalThis: sobrevive a hot reload e é reaproveitado entre invocações da mesma instância. */

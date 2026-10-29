@@ -2,11 +2,11 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
 import {
   MAX_EVENTS,
-  MAX_PEERS,
   PEER_TTL_MS,
   RoomFullError,
   UnknownPeerError,
   type RoomStore,
+  type RoomStoreOptions,
 } from './room-store';
 import { resolveMediaState } from '@/lib/validation';
 
@@ -32,12 +32,15 @@ function sameToken(a: string, b: string): boolean {
 export class MemoryRoomStore implements RoomStore {
   private rooms = new Map<string, Room>();
 
-  constructor(private now: () => number = Date.now) {}
+  constructor(
+    private now: () => number = Date.now,
+    private opts: RoomStoreOptions = {},
+  ) {}
 
   join(room: string, name: string) {
     this.sweep();
     const r = this.rooms.get(room) ?? this.createRoom(room);
-    if (r.peers.size >= MAX_PEERS) throw new RoomFullError();
+    if (this.opts.maxPeers !== undefined && r.peers.size >= this.opts.maxPeers) throw new RoomFullError();
     const t = this.now();
     const peer: Peer = {
       id: randomUUID(),
@@ -73,6 +76,18 @@ export class MemoryRoomStore implements RoomStore {
     const peer = r?.peers.get(peerId);
     if (!r || !peer) throw new UnknownPeerError();
     peer.lastSeen = this.now();
+    return this.read(r, peerId, since);
+  }
+
+  peekEvents(room: string, peerId: string, since: number) {
+    const r = this.rooms.get(room);
+    const peer = r?.peers.get(peerId);
+    // só leitura: nada de sweep (que escreveria) nem de lastSeen; o TTL é conferido na hora
+    if (!r || !peer || peer.lastSeen < this.now() - PEER_TTL_MS) throw new UnknownPeerError();
+    return this.read(r, peerId, since);
+  }
+
+  private read(r: Room, peerId: string, since: number) {
     const events = r.events.filter(
       (e) => e.seq > since && e.from !== peerId && (e.to === undefined || e.to === peerId),
     );

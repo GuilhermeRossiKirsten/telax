@@ -35,7 +35,12 @@ intermedeia a sinalização, a presença e o chat.
   do navegador; o som vai numa faixa própria, separada do microfone
 - **Configurações:** escolha do microfone e da saída de áudio (fone ou alto-falante), lembradas no
   navegador. A saída depende de `setSinkId` (Chrome, Edge e Firefox recentes; não o Safari)
-- Até 8 participantes por sala; interface escura (paleta e fontes do rossik.dev.br: fundo oliva, destaque lima, Roboto/Oswald), responsiva; câmera e microfone entram mutados
+- **Sem limite fixo de participantes** (opcional: variável `MAX_PEERS`); mas é uma malha P2P e o custo cresce com o quadrado do número de pessoas, então salas grandes ficam pesadas (10 pessoas em um só computador levaram ~70 s para conectar todos os pares)
+- **Economia de requisições (Vercel gratuita):** a consulta de eventos usa espera longa (até 8 s por chamada) e os candidatos ICE vão em lote: de ~3.600 para ~450 invocações por pessoa-hora numa sala parada
+- **Som baixo ao entrar e ao sair da sala** (de você e dos outros), desligável em Configurações → Áudio
+- Interface escura (paleta e fontes do rossik.dev.br: fundo oliva, destaque lima, Roboto/Oswald), responsiva; câmera e microfone entram mutados
+
+**Arquitetura completa, com diagramas (cliente, servidor, banco, fluxos e consumo na Vercel):** [docs/ARQUITETURA.md](docs/ARQUITETURA.md)
 
 ## Como rodar
 
@@ -59,6 +64,7 @@ Tudo é opcional. Copie `.env.example` para `.env.local` se precisar de TURN ou 
 | `TURN_URLS` | URLs do servidor TURN, separadas por vírgula (`turn:host:3478,turns:host:5349`) |
 | `TURN_USERNAME` | usuário do TURN |
 | `TURN_CREDENTIAL` | senha do TURN |
+| `MAX_PEERS` | opcional: limita participantes por sala (inteiro positivo). Ausente = sem limite |
 | `MONGODB_URI` | guarda as salas no MongoDB, compartilhadas entre instâncias (**necessário na Vercel**). Sem ela, as salas ficam na memória do processo |
 | `MONGODB_DB` | nome do banco (padrão `telax`) |
 
@@ -193,11 +199,11 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 283 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 352 passaram, 5 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (64 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 64 passaram |
+| E2E, 2 participantes (72 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 72 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |
@@ -209,7 +215,7 @@ vídeo cujo contador de quadros decodificados avança e bytes de áudio/vídeo r
 ICE escolhido entre os dois navegadores (sem relay); mic/câmera refletidos nos outros;
 compartilhamento de tela; chat nos dois sentidos; arquivo de 70 KB íntegro; **reinício global**
 (novas `RTCPeerConnection` nos dois lados, ninguém sai, vídeo volta); saída de participante; recarregar
-a aba; sala com acento no nome; 9º participante ("Sala cheia", com câmera e microfone liberados);
+a aba; sala com acento no nome; 9 participantes na mesma sala sem "Sala cheia" (o limite deixou de existir);
 em 3 pessoas, as 3 conexões do mesh, chat, reinício global feito por uma pessoa e por duas ao mesmo
 tempo, e saída de um participante.
 

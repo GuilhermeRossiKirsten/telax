@@ -86,7 +86,6 @@ type Entry = {
   sid?: number;
   pending: Array<{ sid: number; candidate: RTCIceCandidateInit }>;
   remoteTracks: Partial<Record<Slot, MediaStreamTrack>>;
-  sendChain: Promise<void>;
   everConnected: boolean;
   attempts: number;
   lastState: ConnState | null;
@@ -149,7 +148,7 @@ export class PeerManager {
 
   addPeer(peerId: string): void {
     if (this.closed || this.peers.has(peerId)) return;
-    const e = { id: peerId, offerer: isOfferer(this.opts.selfId, peerId), sendChain: Promise.resolve(), attempts: 0 } as Entry;
+    const e = { id: peerId, offerer: isOfferer(this.opts.selfId, peerId), attempts: 0 } as Entry;
     e.everConnected = false;
     e.lastState = null;
     this.peers.set(peerId, e);
@@ -426,10 +425,18 @@ export class PeerManager {
     await Promise.all(queued.map((p) => pc.addIceCandidate(p.candidate).catch(noop)));
   }
 
-  /** Envia em série por par, para a offer sempre chegar antes dos candidatos dela. */
+  /**
+   * Entrega o sinal a `sendSignal` na ordem em que foi gerado, SEM esperar o envio anterior terminar: quem agrupa
+   * (o lote de sinais) é quem garante a ordem de chegada ao servidor, e esperar cada POST impediria juntar candidatos.
+   * Falha de envio já passa pela retentativa de quem fornece `sendSignal`; aqui só não pode virar rejeição solta.
+   */
   private signalTo(e: Entry, data: Omit<SignalData, 'gen'>): void {
     const full: SignalData = { gen: this.gen, ...data };
-    e.sendChain = e.sendChain.then(() => this.opts.sendSignal(e.id, full)).catch(noop);
+    try {
+      Promise.resolve(this.opts.sendSignal(e.id, full)).catch(noop);
+    } catch {
+      /* exceção síncrona de quem envia: o sinal se perde, como uma falha de rede (a retentativa é de quem fornece sendSignal) */
+    }
   }
 
   // --- mídia e canal -----------------------------------------------------

@@ -6,6 +6,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDevices } from '@/hooks/use-devices';
 import { useLocalMedia } from '@/hooks/use-local-media';
 import { useQuality } from '@/hooks/use-quality';
+import { useRoomSounds } from '@/hooks/use-room-sounds';
+import { useSounds } from '@/hooks/use-sounds';
+import { loadSoundPrefs, playPresenceChimes } from '@/lib/chime';
 import { useRoom } from '@/hooks/use-room';
 import { useViewState } from '@/hooks/use-view-state';
 import { toSendQuality } from '@/lib/quality';
@@ -34,8 +37,12 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   const sendQuality = useMemo(() => toSendQuality(qualityApi.quality), [qualityApi.quality]);
   const r = useRoom({ room, name, tracks: local.tracks, media, sendQuality });
   const screens = useViewState(r.participants);
+  const sounds = useSounds();
   const devices = useDevices();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // sons de entrar/sair: a própria entrada, e outras pessoas entrando e saindo (saída escolhida nas Configurações)
+  const participantIds = useMemo(() => r.participants.map((p) => p.id).sort(), [r.participants]);
+  useRoomSounds(r.selfId, participantIds, devices.outputId);
 
   // os nomes dos dispositivos só aparecem depois da permissão de mídia; e a escolha salva vale assim que a câmera existe
   const { refresh: refreshDevices } = devices;
@@ -90,7 +97,7 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           <h1 className="brand">
             tela<span>X</span>
           </h1>
-          <p role="alert">Sala cheia: &quot;{room}&quot; já tem 8 participantes.</p>
+          <p role="alert">Sala cheia: &quot;{room}&quot; atingiu o limite de participantes.</p>
           <p className="muted">
             Você pode copiar o link da sala e compartilhar com outras pessoas.
           </p>
@@ -212,12 +219,17 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         onPanel={() => setPanelOpen((o) => !o)}
         onSettings={() => setSettingsOpen(true)}
         onRestart={restart}
-        onLeave={() => router.push('/')}
+        onLeave={() => {
+          // o AudioContext sobrevive à navegação de cliente: o toque de saída termina de tocar na tela inicial
+          if (loadSoundPrefs().enabled) void playPresenceChimes({ joined: 0, left: 1 }, devices.outputId);
+          router.push('/');
+        }}
       />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         devices={devices}
+        sounds={sounds}
         quality={qualityApi}
         inUse={local.inUse}
         participants={r.participants.length}

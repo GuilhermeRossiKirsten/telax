@@ -13,6 +13,15 @@ export const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 
 export const MAX_BODY = 128 * 1024;
 
+/** Espera máxima (ms) de uma consulta de eventos: metade do TTL de 15 s do peer, para o batimento nunca atrasar. */
+export const MAX_WAIT_MS = 8000;
+
+/** `wait` da consulta de eventos: inteiro de 0 a MAX_WAIT_MS; ausente ou inválido = 0 (resposta imediata). */
+export function parseWait(raw: string | null | undefined): number {
+  if (!raw || !/^\d+$/.test(raw)) return 0;
+  return Math.min(Number(raw), MAX_WAIT_MS);
+}
+
 async function readBody(req: Request): Promise<Body | null> {
   try {
     const text = await req.text();

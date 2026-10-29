@@ -1,6 +1,11 @@
 import type { PeerInfo, PeerMediaState, RoomEvent, SignalData } from './types';
 
+/** Espera mínima entre polls quando o servidor NÃO segurou a resposta (servidor antigo, ou erro rápido). */
 export const POLL_MS = 1000;
+/** Quanto o servidor pode segurar a resposta de /events esperando um evento (cada poll vira UMA invocação a cada ~8 s). */
+export const POLL_WAIT_MS = 8000;
+/** Uma resposta vazia que voltou antes disto não foi uma espera de verdade: aplica o piso para não formar laço quente. */
+const FAST_RESPONSE_MS = 250;
 const MAX_BACKOFF_MS = 5000;
 /**
  * Re-joins seguidos (410) significam que o servidor não guarda a sala entre requisições, ex.: várias
@@ -46,7 +51,10 @@ export function createSignalingClient(opts: Options) {
   let stopped = false;
   let status: SignalingStatus | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const abort = new AbortController();
+  /** Controlador do poll em andamento: stop() e leave() o cancelam na hora (um poll pode estar pendurado por até 8 s). */
+  let pollCtl: AbortController | undefined;
+  /** Como foi o último poll bem-sucedido (null depois de um join): decide se o próximo sai já ou espera o piso. */
+  let lastPoll: { elapsed: number; hadEvents: boolean } | null = null;
 
   function setStatus(next: SignalingStatus) {
     if (next === status) return;
@@ -75,6 +83,7 @@ export function createSignalingClient(opts: Options) {
     const isRejoin = hasJoined;
     hasJoined = true;
     failures = 0;
+    lastPoll = null;
     setStatus('online');
     opts.onJoined(
       { peerId: body.peerId, participants: body.participants, gen: body.gen, iceServers: body.iceServers },
@@ -84,8 +93,22 @@ export function createSignalingClient(opts: Options) {
   }
 
   async function poll(): Promise<boolean> {
-    const url = `${base}/events?peerId=${encodeURIComponent(peerId!)}&token=${encodeURIComponent(token)}&since=${cursor}`;
-    const res = await doFetch(url, { signal: abort.signal });
+    const url = `${base}/events?peerId=${encodeURIComponent(peerId!)}&token=${encodeURIComponent(token)}&since=${cursor}&wait=${POLL_WAIT_MS}`;
+    const ctl = (pollCtl = new AbortController());
+    const startedAt = Date.now();
+    let res: Response;
+    let body: { events: RoomEvent[]; cursor: number } | null = null;
+    try {
+      res = await doFetch(url, { signal: ctl.signal });
+      if (stopped) return true;
+      if (res.ok) body = (await res.json()) as { events: RoomEvent[]; cursor: number };
+    } catch (e) {
+      // cancelado por stop() ou leave(): não é falha de rede
+      if (ctl.signal.aborted) return true;
+      throw e;
+    } finally {
+      if (pollCtl === ctl) pollCtl = undefined;
+    }
     if (stopped) return true;
     if (res.status === 410) {
       peerId = null;
@@ -98,14 +121,13 @@ export function createSignalingClient(opts: Options) {
       rejoinTimes.push(now);
       return join();
     }
-    if (!res.ok) throw new Error(`events ${res.status}`);
-    const body = (await res.json()) as { events: RoomEvent[]; cursor: number };
-    if (stopped) return true;
+    if (!res.ok || !body) throw new Error(`events ${res.status}`);
     cursor = body.cursor;
     if (failures > 0) {
       failures = 0;
       setStatus('online');
     }
+    lastPoll = { elapsed: Date.now() - startedAt, hadEvents: body.events.length > 0 };
     for (const event of body.events) opts.onEvent(event);
     return true;
   }
@@ -116,10 +138,20 @@ export function createSignalingClient(opts: Options) {
     );
   }
 
+  /**
+   * Quando sai o próximo passo. Com a espera longa é o SERVIDOR quem espera, então depois de uma resposta que
+   * trouxe eventos, ou que demorou (o servidor segurou), o próximo poll sai na hora. Resposta rápida e vazia
+   * (servidor que ignora `wait`, ou erro rápido) cai no piso de `pollMs`; falhas seguem o backoff.
+   */
+  function nextDelay(): number {
+    if (failures > 0) return Math.min(pollMs * 2 ** failures, MAX_BACKOFF_MS);
+    if (lastPoll === null) return 0; // recém-entrou: começa a espera longa já
+    return lastPoll.hadEvents || lastPoll.elapsed >= FAST_RESPONSE_MS ? 0 : pollMs;
+  }
+
   function schedule() {
     if (stopped) return;
-    const delay = failures === 0 ? pollMs : Math.min(pollMs * 2 ** failures, MAX_BACKOFF_MS);
-    timer = setTimeout(tick, delay);
+    timer = setTimeout(tick, nextDelay());
   }
 
   async function step(): Promise<boolean> {
@@ -154,11 +186,16 @@ export function createSignalingClient(opts: Options) {
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      abort.abort();
+      pollCtl?.abort();
     },
 
     async signal(to: string, data: SignalData) {
       await post('signal', { to, data });
+    },
+
+    /** Vários sinais (ex.: candidatos ICE) numa única requisição: cada requisição é uma invocação da função. */
+    async signals(items: Array<{ to: string; data: SignalData }>) {
+      await post('signal', { items });
     },
 
     async chat(text: string) {
@@ -178,6 +215,7 @@ export function createSignalingClient(opts: Options) {
     /** Avisa o servidor que saímos; usa keepalive para sobreviver ao fechamento da aba. */
     leave() {
       if (peerId) sendLeave(peerId, token);
+      pollCtl?.abort(); // não deixa um poll pendurado por 8 s depois de sair
     },
   };
 }

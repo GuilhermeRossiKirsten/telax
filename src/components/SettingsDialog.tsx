@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef } from 'react';
 import type { useDevices } from '@/hooks/use-devices';
 import type { QualityApi } from '@/hooks/use-quality';
+import type { SoundsApi } from '@/hooks/use-sounds';
 import { TransmissionSettings } from './TransmissionSettings';
 import './settings-dialog.css';
 
@@ -11,6 +12,7 @@ type Props = {
   onClose(): void;
   devices: ReturnType<typeof useDevices>;
   quality: QualityApi;
+  sounds: SoundsApi;
   /** o que a captura realmente entrega, por tipo */
   inUse: { camera: string; screen: string };
   participants: number;
@@ -19,11 +21,12 @@ type Props = {
 
 const FOCUSABLE = 'select:not(:disabled), button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function SettingsDialog({ open, onClose, devices, quality, inUse, participants, sharing }: Props) {
+export function SettingsDialog({ open, onClose, devices, sounds, quality, inUse, participants, sharing }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const micField = useRef<HTMLSelectElement>(null);
   const micId = useId();
   const outId = useId();
+  const soundsId = useId();
   // ref: um `onClose` inline do pai não pode reexecutar o efeito a cada render (roubaria o foco)
   const closeRef = useRef(onClose);
   useEffect(() => {
@@ -126,6 +129,11 @@ export function SettingsDialog({ open, onClose, devices, quality, inUse, partici
           {!canChooseOutput && (
             <p className="sd-note">Este navegador não permite escolher a saída de áudio; o som sai pelo dispositivo padrão do sistema.</p>
           )}
+        </div>
+
+        <div className="sd-check">
+          <input id={soundsId} type="checkbox" checked={sounds.enabled} onChange={(e) => sounds.setEnabled(e.target.checked)} />
+          <label htmlFor={soundsId}>Tocar um som baixo quando alguém entrar ou sair da sala</label>
         </div>
 
         <TransmissionSettings api={quality} inUse={inUse} participants={participants} sharing={sharing} />

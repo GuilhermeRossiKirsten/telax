@@ -2,6 +2,7 @@ import type { SignalData } from '@/lib/types';
 
 export const MAX_SDP = 32 * 1024;
 export const MAX_CANDIDATE = 2048;
+export const MAX_BATCH = 50;
 const MAX_MID = 64;
 const MAX_UFRAG = 256;
 
@@ -47,6 +48,22 @@ export function parseSignal(raw: unknown): SignalData | null {
     const candidate = parseCandidate(raw.candidate);
     if (!candidate) return null;
     out.candidate = candidate;
+  }
+  return out;
+}
+
+/**
+ * Lote de sinais: 1..MAX_BATCH itens `{ to, data }`. Tudo ou nada: qualquer item inválido invalida o lote inteiro,
+ * para que nada seja aplicado pela metade. Cada `data` é reconstruído por parseSignal (só campos conhecidos).
+ */
+export function parseSignalItems(raw: unknown): Array<{ to: string; data: SignalData }> | null {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_BATCH) return null;
+  const out: Array<{ to: string; data: SignalData }> = [];
+  for (const it of raw) {
+    if (!isObj(it) || typeof it.to !== 'string' || it.to.length === 0) return null;
+    const data = parseSignal(it.data);
+    if (!data) return null;
+    out.push({ to: it.to, data });
   }
   return out;
 }

@@ -4,11 +4,11 @@ import type { PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } f
 import { resolveMediaState } from '@/lib/validation';
 import {
   MAX_EVENTS,
-  MAX_PEERS,
   PEER_TTL_MS,
   RoomFullError,
   UnknownPeerError,
   type RoomStore,
+  type RoomStoreOptions,
 } from './room-store';
 
 type PeerDoc = {
@@ -142,6 +142,7 @@ export class MongoRoomStore implements RoomStore {
   constructor(
     private rooms: Collection<RoomDoc>,
     private now: () => number = Date.now,
+    private opts: RoomStoreOptions = {},
   ) {}
 
   /** Índice TTL que apaga salas abandonadas. Idempotente; chame uma vez ao criar o store. */
@@ -158,11 +159,13 @@ export class MongoRoomStore implements RoomStore {
     const info: PeerInfo = { id: peerId, name, joinedAt: t, audio: true, video: true, sharing: false, screenSlots: 0 };
 
     // O MongoDB não aceita `$expr` no filtro de um upsert, então são dois passos: garante a sala e depois
-    // entra com a checagem de lotação num update comum (atômico, vale entre instâncias).
+    // entra num update comum. Com limite (opcional), esse update também checa a lotação (atômico, vale entre
+    // instâncias); sem limite, não há checagem nenhuma.
+    const maxPeers = this.opts.maxPeers;
     for (let attempt = 0; attempt < 5; attempt++) {
       await this.ensureRoom(room);
       const doc = await this.rooms.findOneAndUpdate(
-        { _id: room, $expr: { $lt: [aliveCountExpr(limit), MAX_PEERS] } } as Filter<RoomDoc>,
+        (maxPeers === undefined ? { _id: room } : { _id: room, $expr: { $lt: [aliveCountExpr(limit), maxPeers] } }) as Filter<RoomDoc>,
         [
           {
             $set: {
@@ -188,10 +191,11 @@ export class MongoRoomStore implements RoomStore {
           .map(([id, p]) => peerInfo(id, p));
         return { peerId, token, participants, cursor: doc.seq, gen: doc.gen };
       }
-      // Não casou: ou a sala está cheia, ou foi apagada entre os dois passos (aí tenta de novo).
+      // Não casou: ou a sala está cheia (só com limite), ou foi apagada entre os dois passos (aí tenta de novo).
+      if (maxPeers === undefined) continue;
       const current = await this.rooms.findOne({ _id: room }, { projection: { peers: 1 } });
       const alive = Object.values(current?.peers ?? {}).filter((p) => p.lastSeen >= limit).length;
-      if (current && alive >= MAX_PEERS) throw new RoomFullError();
+      if (current && alive >= maxPeers) throw new RoomFullError();
     }
     throw new Error('join_contention');
   }
@@ -223,6 +227,21 @@ export class MongoRoomStore implements RoomStore {
       doc = (await this.rooms.findOne({ _id: room }, { projection: { seq: 1, events: 1 } })) ?? doc;
     }
 
+    const events: RoomEvent[] = doc.events
+      .filter((e) => e.seq > since && e.from !== peerId && (e.to === undefined || e.to === peerId))
+      .map(({ at: _at, ...event }) => event);
+    return { events, cursor: doc.seq };
+  }
+
+  /** Só leitura (um `findOne` com projeção mínima): não renova `lastSeen`, não escreve, não varre. */
+  async peekEvents(room: string, peerId: string, since: number) {
+    if (!UUID.test(peerId)) throw new UnknownPeerError();
+    const doc = await this.rooms.findOne(
+      { _id: room },
+      { projection: { seq: 1, events: 1, [`peers.${peerId}.lastSeen`]: 1 } },
+    );
+    const peer = doc?.peers?.[peerId];
+    if (!doc || !peer || peer.lastSeen < this.now() - PEER_TTL_MS) throw new UnknownPeerError();
     const events: RoomEvent[] = doc.events
       .filter((e) => e.seq > since && e.from !== peerId && (e.to === undefined || e.to === peerId))
       .map(({ at: _at, ...event }) => event);

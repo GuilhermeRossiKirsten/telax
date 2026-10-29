@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { MongoClient, type Db } from 'mongodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MongoRoomStore } from './mongo-room-store';
+import type { RoomStoreOptions } from './room-store';
 import { describeRoomStore } from './room-store.contract';
 
 /**
@@ -29,9 +30,9 @@ if (uri) {
   });
 }
 
-const newStore = (now: () => number = Date.now) => new MongoRoomStore(db.collection('rooms'), now);
+const newStore = (now: () => number = Date.now, opts?: RoomStoreOptions) => new MongoRoomStore(db.collection('rooms'), now, opts);
 
-if (uri) describeRoomStore('MongoDB', (now) => newStore(now));
+if (uri) describeRoomStore('MongoDB', (now, opts) => newStore(now, opts));
 else describe.skip('contrato do RoomStore: MongoDB (defina MONGODB_TEST_URI para rodar)', () => it('pulado', () => {}));
 
 suite('várias instâncias do servidor compartilhando o mesmo MongoDB', () => {
@@ -54,13 +55,22 @@ suite('várias instâncias do servidor compartilhando o mesmo MongoDB', () => {
     expect(doBeto.events.map((e) => e.type)).toEqual(['chat']);
   });
 
-  it('o limite de 8 vale entre instâncias diferentes disputando ao mesmo tempo', async () => {
-    const instancias = [newStore(), newStore(), newStore()];
+  it('o limite opcional vale entre instâncias diferentes disputando ao mesmo tempo', async () => {
+    const instancias = [newStore(Date.now, { maxPeers: 8 }), newStore(Date.now, { maxPeers: 8 }), newStore(Date.now, { maxPeers: 8 })];
     const room = `multi-${randomUUID().slice(0, 8)}`;
     const results = await Promise.allSettled(
       Array.from({ length: 15 }, (_, i) => instancias[i % 3].join(room, `p${i}`)),
     );
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(8);
+  });
+
+  it('sem limite, 15 joins disputando em 3 instâncias entram todos', async () => {
+    const instancias = [newStore(), newStore(), newStore()];
+    const room = `multi-${randomUUID().slice(0, 8)}`;
+    const results = await Promise.allSettled(
+      Array.from({ length: 15 }, (_, i) => instancias[i % 3].join(room, `p${i}`)),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(15);
   });
 
   it('salas diferentes não se misturam', async () => {

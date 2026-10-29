@@ -994,3 +994,73 @@ describe('limpeza', () => {
     expect(signals.length).toBe(n);
   });
 });
+
+describe('envio de sinais: não espera o POST anterior (para poder juntar candidatos em lote)', () => {
+  type Sent = { to: string; data: SignalData; settle(ok: boolean): void };
+
+  function setupControlled() {
+    const sent: Sent[] = [];
+    const manager = new PeerManager({
+      selfId: 'a',
+      gen: 0,
+      iceServers: [],
+      jitterMs: 0,
+      // cada envio só termina quando o teste manda
+      sendSignal: (to, data) =>
+        new Promise<void>((resolve, reject) => {
+          sent.push({ to, data, settle: (ok) => (ok ? resolve() : reject(new Error('rede'))) });
+        }),
+      onRemoteTracks: () => {},
+      onConnState: () => {},
+      onFile: () => {},
+      createPC: () => new FakePC() as unknown as RTCPeerConnection,
+    });
+    const ice = (n: number) => FakePC.all.at(-1)!.onicecandidate?.({ candidate: { toJSON: () => ({ candidate: `c${n}` }) } });
+    return { manager, sent, ice };
+  }
+
+  const label = (s: Sent) => (s.data.kind === 'candidate' ? String((s.data.candidate as { candidate: string }).candidate) : s.data.kind);
+
+  it('um envio lento (a offer ainda em voo) não segura os candidatos seguintes: todos chegam ao sendSignal', async () => {
+    const t = setupControlled();
+    t.manager.addPeer('b'); // a < b: a oferece
+    await flush();
+    t.ice(1);
+    t.ice(2);
+    await flush();
+    // nenhum envio terminou, e mesmo assim os três já foram entregues (o lote é quem agrupa)
+    expect(t.sent.map(label)).toEqual(['offer', 'c1', 'c2']);
+    t.manager.close();
+  });
+
+  it('a ordem de chegada ao sendSignal é a ordem em que os sinais foram gerados', async () => {
+    const t = setupControlled();
+    t.manager.addPeer('b');
+    await flush();
+    for (let i = 1; i <= 5; i++) t.ice(i);
+    await flush();
+    expect(t.sent.map(label)).toEqual(['offer', 'c1', 'c2', 'c3', 'c4', 'c5']);
+    expect(t.sent.every((s) => s.to === 'b')).toBe(true);
+    t.manager.close();
+  });
+
+  it('um sendSignal que rejeita não gera rejeição não tratada nem impede os seguintes', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on('unhandledRejection', onUnhandled);
+    const t = setupControlled();
+    t.manager.addPeer('b');
+    await flush();
+    t.sent[0].settle(false); // a offer falha
+    t.ice(1);
+    await flush();
+    t.sent[1].settle(false);
+    t.sent[1].settle(true);
+    vi.useRealTimers(); // deixa o Node emitir (ou não) o unhandledRejection
+    await new Promise((r) => setTimeout(r, 30));
+    process.off('unhandledRejection', onUnhandled);
+    expect(unhandled).toEqual([]);
+    expect(t.sent.map(label)).toEqual(['offer', 'c1']);
+    t.manager.close();
+  });
+});

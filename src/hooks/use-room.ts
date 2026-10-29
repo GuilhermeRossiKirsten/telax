@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PeerManager, type ConnState, type LocalTracks, type SendQuality } from '@/lib/peer-manager';
 import { MAX_SCREENS } from '@/lib/screens';
+import { createSignalBatcher } from '@/lib/signal-batcher';
 import { createSignalingClient, type SignalingStatus } from '@/lib/signaling-client';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, SignalData } from '@/lib/types';
 
@@ -95,6 +96,15 @@ export function useRoom(args: {
       setConn((c) => omit(c, peerId));
     };
 
+    // Sinais (sobretudo candidatos ICE) vão em lote: cada requisição à API é uma invocação de função.
+    // `client` só é usado na hora de enviar, depois de criado.
+    const batcher = createSignalBatcher((items) =>
+      items.length === 1 ? client.signal(items[0].to, items[0].data) : client.signals(items),
+    );
+    const sendSignal = (to: string, data: SignalData) =>
+      // depois de desmontar, o lote pendente é descartado: não é falha de rede, então não deve haver nova tentativa
+      withRetry(() => batcher.push(to, data).catch((e) => (disposed ? undefined : Promise.reject(e))));
+
     const client = createSignalingClient({
       room,
       name,
@@ -121,7 +131,7 @@ export function useRoom(args: {
           selfId: result.peerId,
           iceServers: result.iceServers,
           gen: result.gen,
-          sendSignal: (to, data) => withRetry(() => client.signal(to, data)),
+          sendSignal,
           onConnState: (id, s) => !disposed && setConn((c) => ({ ...c, [id]: s })),
           onRemoteTracks: (id, t) => {
             if (disposed) return;
@@ -202,6 +212,7 @@ export function useRoom(args: {
 
     return () => {
       disposed = true;
+      batcher.dispose();
       window.removeEventListener('pagehide', onPageHide);
       client.leave();
       client.stop();
