@@ -2,6 +2,18 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 3100;
 
+/**
+ * Ambiente do servidor de TESTE do painel de admin. Os e2e importam esta constante e ASSINAM a própria sessão com o
+ * mesmo segredo (não existe "modo de teste" no código de produção): testam tudo, menos o redirecionamento ao GitHub,
+ * que tem teste unitário com `fetch` falso.
+ */
+export const ADMIN_TEST_ENV = {
+  ADMIN_SESSION_SECRET: 'segredo-de-teste-do-admin-com-mais-de-32-caracteres',
+  ADMIN_GITHUB_USER: 'telax-test-admin',
+  GITHUB_CLIENT_ID: 'test-client-id',
+  GITHUB_CLIENT_SECRET: 'test-client-secret',
+};
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 90_000,
@@ -17,6 +29,7 @@ export default defineConfig({
     url: `http://localhost:${PORT}`,
     reuseExistingServer: true,
     timeout: 300_000,
+    env: ADMIN_TEST_ENV,
   },
   projects: [
     {

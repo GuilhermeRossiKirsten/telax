@@ -1,6 +1,6 @@
 import { MongoClient } from 'mongodb';
 import { MemoryRoomStore } from './memory-room-store';
-import { MongoRoomStore, type RoomDoc } from './mongo-room-store';
+import { MongoRoomStore, adminCollections, type RoomDoc } from './mongo-room-store';
 import type { RoomStore, RoomStoreOptions } from './room-store';
 
 const globalForStore = globalThis as unknown as { __telaxStore?: RoomStore };
@@ -31,7 +31,9 @@ export function createStore(env: Env): RoomStore {
     maxIdleTimeMS: 10_000,
     serverSelectionTimeoutMS: 5_000,
   });
-  return new MongoRoomStore(client.db(env.MONGODB_DB?.trim() || 'telax').collection<RoomDoc>('rooms'), Date.now, opts);
+  const db = client.db(env.MONGODB_DB?.trim() || 'telax');
+  // além das salas: fechadas, banimentos e tombstones do admin (coleções próprias, sem o TTL de 1 h das salas)
+  return new MongoRoomStore(db.collection<RoomDoc>('rooms'), Date.now, { ...opts, admin: adminCollections(db) });
 }
 
 /** Singleton em globalThis: sobrevive a hot reload e é reaproveitado entre invocações da mesma instância. */
@@ -39,8 +41,8 @@ export function getStore(): RoomStore {
   if (!globalForStore.__telaxStore) {
     const store = createStore(process.env);
     if (store instanceof MongoRoomStore) {
-      // o índice TTL só limpa salas abandonadas: se falhar, o app segue funcionando
-      void store.ensureIndexes().catch((e) => console.error('telax: não criou o índice TTL das salas', e));
+      // os índices TTL só limpam salas abandonadas e tombstones velhos: se falhar, o app segue funcionando
+      void store.ensureIndexes().catch((e) => console.error('telax: não criou os índices TTL (salas e tombstones do admin)', e));
     }
     globalForStore.__telaxStore = store;
   }

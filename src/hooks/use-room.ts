@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { parseAdminEvent } from '@/lib/admin-commands';
+import type { AdminCommand, RemovalReason } from '@/lib/admin-types';
+import { getDeviceId } from '@/lib/device-id';
 import { PeerManager, type ConnState, type LocalTracks, type SendQuality } from '@/lib/peer-manager';
 import { MAX_SCREENS } from '@/lib/screens';
 import { createSignalBatcher } from '@/lib/signal-batcher';
@@ -23,6 +26,8 @@ export type RoomFile = {
 };
 
 const noop = () => {};
+/** O observador (admin) não envia mídia: nenhuma faixa local, nunca. */
+const NO_TRACKS: LocalTracks = { audio: null, camera: null, screens: [] };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Reenvia um sinal algumas vezes: uma offer perdida deixaria o par parado sem nunca falhar. */
@@ -43,15 +48,22 @@ function syncStream(stream: MediaStream, wanted: Array<MediaStreamTrack | undefi
   for (const t of keep) if (!stream.getTracks().includes(t)) stream.addTrack(t);
 }
 
-/** `sendQuality` (opcional, memoize-o): limita bitrate/fps do que este navegador envia; sem ele, nada muda. */
+/**
+ * `sendQuality` (opcional, memoize-o): limita bitrate/fps do que este navegador envia; sem ele, nada muda.
+ * `observer`: entra como OBSERVADOR (o administrador vendo a sala): só recebe mídia, não aparece na lista nem em tiles
+ * e não anuncia estado. `onAdminCommand`: chamado quando o administrador manda um comando a ESTE navegador.
+ */
 export function useRoom(args: {
   room: string;
   name: string;
   tracks: LocalTracks;
   media: PeerMediaState;
   sendQuality?: SendQuality;
+  observer?: boolean;
+  onAdminCommand?: (cmd: AdminCommand) => void;
 }) {
-  const { room, name, tracks, media, sendQuality } = args;
+  const { room, name, media, sendQuality, observer = false, onAdminCommand } = args;
+  const tracks = observer ? NO_TRACKS : args.tracks;
   const [status, setStatus] = useState<SignalingStatus>('connecting');
   const [selfId, setSelfId] = useState<string | null>(null);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
@@ -60,12 +72,17 @@ export function useRoom(args: {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [files, setFiles] = useState<RoomFile[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [adminMessage, setAdminMessage] = useState<{ text: string; at: number } | null>(null);
+  const [removed, setRemoved] = useState<{ reason: RemovalReason; detail?: string } | null>(null);
+  const [blocked, setBlocked] = useState<{ reason: 'banned' | 'closed'; detail?: string } | null>(null);
 
   const clientRef = useRef<ReturnType<typeof createSignalingClient> | null>(null);
   const managerRef = useRef<PeerManager | null>(null);
   const tracksRef = useRef(tracks);
   const mediaRef = useRef(media);
   const qualityRef = useRef(sendQuality);
+  const adminCommandRef = useRef(onAdminCommand);
+  const observerRef = useRef(observer);
   const selfRef = useRef<string | null>(null);
   const streamRefs = useRef(new Map<string, RemoteStreams>());
   const urlsRef = useRef(new Set<string>());
@@ -81,8 +98,14 @@ export function useRoom(args: {
   }, [sendQuality]);
 
   useEffect(() => {
+    adminCommandRef.current = onAdminCommand;
+    observerRef.current = observer;
+  });
+
+  useEffect(() => {
     mediaRef.current = media;
-    if (status === 'online') clientRef.current?.setState(media).catch(noop);
+    // o observador não anuncia mic/câmera/telas (e economiza invocações)
+    if (status === 'online' && !observerRef.current) clientRef.current?.setState(media).catch(noop);
   }, [media, status]);
 
   useEffect(() => {
@@ -108,11 +131,18 @@ export function useRoom(args: {
     const client = createSignalingClient({
       room,
       name,
+      deviceId: getDeviceId(),
+      observer,
       onStatus: (s) => {
         if (disposed) return;
-        // sem sinalização não há como manter os pares: solta as conexões em vez de deixá-las órfãs
-        if (s === 'error') managerRef.current?.close();
+        // sem sinalização (ou sem acesso, para o admin) não há como manter os pares: solta as conexões em vez de deixá-las órfãs
+        if (s === 'error' || s === 'blocked' || s === 'removed') managerRef.current?.close();
         setStatus(s);
+      },
+      onEnded: (end) => {
+        if (disposed) return;
+        if (end.kind === 'removed') setRemoved({ reason: end.reason, ...(end.detail ? { detail: end.detail } : {}) });
+        else setBlocked({ reason: end.reason, ...(end.detail ? { detail: end.detail } : {}) });
       },
 
       onJoined: (result, isRejoin) => {
@@ -168,8 +198,8 @@ export function useRoom(args: {
         if (qualityRef.current) manager.setSendQuality(qualityRef.current);
         managerRef.current = manager;
         for (const p of result.participants) if (p.id !== result.peerId) manager.addPeer(p.id);
-        // o servidor assume mic/câmera ligados ao entrar; corrige já com o estado real
-        client.setState(mediaRef.current).catch(noop);
+        // o servidor assume mic/câmera ligados ao entrar; corrige já com o estado real (o observador não anuncia nada)
+        if (!observerRef.current) client.setState(mediaRef.current).catch(noop);
       },
 
       onEvent: (e: RoomEvent) => {
@@ -201,6 +231,15 @@ export function useRoom(args: {
           case 'restart':
             manager?.restartAll((e.payload as { gen: number }).gen);
             break;
+          case 'admin': {
+            // só o servidor emite eventos admin (from: 'admin'); o observador (o próprio admin) não precisa deles
+            if (e.from !== 'admin' || observerRef.current) break;
+            const ev = parseAdminEvent(e.payload);
+            if (!ev) break;
+            if (ev.kind === 'message') setAdminMessage({ text: ev.text, at: ev.at });
+            else adminCommandRef.current?.(ev.what === 'screen' ? { what: 'screen', slot: ev.slot } : { what: ev.what });
+            break;
+          }
         }
       },
     });
@@ -224,7 +263,7 @@ export function useRoom(args: {
       for (const url of urls) URL.revokeObjectURL(url);
       urls.clear();
     };
-  }, [room, name]);
+  }, [room, name, observer]);
 
   const sendChat = useCallback(
     (text: string) => {
@@ -277,14 +316,18 @@ export function useRoom(args: {
     }
   }, []);
 
+  // Observadores (o admin) ficam em `peers` para o PeerManager abrir a conexão com eles, mas NÃO são participantes:
+  // sem lista, sem tile, sem contagem e sem som de entrada/saída.
   const participants = useMemo<Participant[]>(() => {
     const others = Object.values(peers)
-      .filter((p) => p.id !== selfId)
+      .filter((p) => p.id !== selfId && !p.observer)
       .sort((a, b) => a.joinedAt - b.joinedAt)
       .map<Participant>((p) => ({ ...p, conn: conn[p.id] ?? 'connecting' }));
     const me = selfId ? peers[selfId] : undefined;
-    return me ? [{ ...me, ...media, conn: 'self' }, ...others] : others;
-  }, [peers, conn, selfId, media]);
+    return me && !observer ? [{ ...me, ...media, conn: 'self' }, ...others] : others;
+  }, [peers, conn, selfId, media, observer]);
+
+  const observerPresent = useMemo(() => Object.values(peers).some((p) => p.observer && p.id !== selfId), [peers, selfId]);
 
   return {
     status,
@@ -294,6 +337,11 @@ export function useRoom(args: {
     messages,
     files,
     error,
+    observerPresent,
+    adminMessage,
+    dismissAdminMessage: () => setAdminMessage(null),
+    removed,
+    blocked,
     dismissError: () => setError(null),
     sendChat,
     sendFile,

@@ -137,3 +137,17 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Registro de honestidade: o ganho na Vercel é medido localmente; o consumo real na Vercel não foi verificado. O Atlas passa a receber ~1 leitura por 0,7 s por conexão aberta (as invocações caem, as leituras não).
 - Verificação final: tsc limpo; vitest 352 passed / 5 skipped; e2e 72/72; mesh 5/5; npm audit 0.
 - Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.
+
+## Painel de administração
+
+- Pedido: tela de admin (login GitHub, só o dono): salas, fechar, mensagem, expulsar, banir por IP e MAC, ver câmeras e telas, parar transmissão. Depois: "todos os endpoints de admin e de controle devem ser protegidos, só o admin usa".
+- Design e contrato escritos ANTES (`docs/superpowers/specs/2026-10-29-admin-design.md`) e tipos congelados (`src/lib/admin-types.ts`). 4 forks em paralelo com arquivos próprios: S1 armazenamento (Memory + Mongo REAL, 28 testes de contrato vistos falhar nos dois), S2 autenticação e rotas, C1 cliente, D1 tela de admin.
+- Regra de ouro: negar por padrão. `adminRoute` é o único jeito de criar handler em `/api/admin/**`; teste estrutural varre as rotas e foi provado vermelho acrescentando uma rota sem o filtro. Meu e2e testa os 12 endpoints contra servidor real em 5 condições (sem sessão, outro usuário, segredo errado, adulterada, expirada), a origem em métodos mutantes, `observer` sem sessão (403 e ninguém entra) e IP forjado no corpo.
+- Ruling: **MAC é impossível** (a web não o expõe). Entreguei IP + UUID do dispositivo e avisei na própria tela. IP compartilhado bane inocentes (visto no e2e: todos os navegadores do teste têm o mesmo IP).
+- Ruling: ver câmeras/telas por **observador WebRTC**, com **aviso visível aos participantes** enquanto ele está na sala. Decisão minha por transparência/LGPD; o usuário não pediu o aviso (é removível).
+- Ruling: falha fechada. Sem `ADMIN_GITHUB_USER`/segredo/credenciais do GitHub o admin fica desligado (503), nunca aberto.
+- Não sei o login do GitHub do usuário: ficou em `ADMIN_GITHUB_USER`. O usuário precisa criar o OAuth App no GitHub e configurar as variáveis (README).
+- Falhas na integração (todas de TESTE, exceto uma): seletor de célula (o nome é cabeçalho de linha), botão de confirmar chama-se "Expulsar"/"Banir" e não "Confirmar", ban por IP atinge todos no teste. **Lacuna real achada pelo e2e:** o texto do motivo digitado pelo admin nunca chegava à pessoa removida (o servidor guardava, mas o `410` e o cliente o descartavam). Corrigido de ponta a ponta com teste unitário visto falhar antes (servidor e cliente).
+- Verificação: tsc limpo; vitest 571 passed / 5 skipped (com Mongo real o fork S1 rodou 642/642); e2e 96/96; mesh 5/5; audit 0.
+- Não verificado: o fluxo OAuth com o GitHub de verdade (só unitário com `fetch` falso), consumo de recursos do observador, MongoDB Atlas real, deploy na Vercel.
+- Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.

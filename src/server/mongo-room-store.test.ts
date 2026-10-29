@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { MongoClient, type Db } from 'mongodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MongoRoomStore } from './mongo-room-store';
+import { MongoRoomStore, adminCollections } from './mongo-room-store';
 import type { RoomStoreOptions } from './room-store';
 import { describeRoomStore } from './room-store.contract';
 
@@ -22,7 +22,7 @@ if (uri) {
     client = new MongoClient(uri);
     await client.connect();
     db = client.db(`telax_test_${randomUUID().slice(0, 8)}`);
-    await new MongoRoomStore(db.collection('rooms')).ensureIndexes();
+    await new MongoRoomStore(db.collection('rooms'), Date.now, { admin: adminCollections(db) }).ensureIndexes();
   });
   afterAll(async () => {
     await db.dropDatabase();
@@ -30,7 +30,7 @@ if (uri) {
   });
 }
 
-const newStore = (now: () => number = Date.now, opts?: RoomStoreOptions) => new MongoRoomStore(db.collection('rooms'), now, opts);
+const newStore = (now: () => number = Date.now, opts?: RoomStoreOptions) => new MongoRoomStore(db.collection('rooms'), now, { ...opts, admin: adminCollections(db) });
 
 if (uri) describeRoomStore('MongoDB', (now, opts) => newStore(now, opts));
 else describe.skip('contrato do RoomStore: MongoDB (defina MONGODB_TEST_URI para rodar)', () => it('pulado', () => {}));

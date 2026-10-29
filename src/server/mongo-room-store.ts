@@ -1,12 +1,32 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { MongoServerError, type Collection, type Document, type Filter } from 'mongodb';
+import { MongoServerError, type Collection, type Db, type Document, type Filter } from 'mongodb';
+import type {
+  AdminCommand,
+  AdminPeer,
+  AdminRoomDetail,
+  AdminRoomSummary,
+  Ban,
+  JoinContext,
+  RemovalReason,
+} from '@/lib/admin-types';
 import type { PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
 import { resolveMediaState } from '@/lib/validation';
 import {
+  BannedError,
   MAX_EVENTS,
   PEER_TTL_MS,
+  RoomClosedError,
   RoomFullError,
+  TOMBSTONE_MS,
   UnknownPeerError,
+  banId,
+  cleanCommand,
+  cleanIp,
+  cleanMessage,
+  cleanReason,
+  isUuid,
+  type BanEntry,
+  type BanResult,
   type RoomStore,
   type RoomStoreOptions,
 } from './room-store';
@@ -21,9 +41,15 @@ type PeerDoc = {
   /** ausente em salas gravadas antes das várias telas: vale `sharing ? 1 : 0` */
   screenSlots?: number;
   tokenHash: string;
+  /** só o admin lê: nunca vão em PeerInfo nem em eventos */
+  ip?: string;
+  deviceId?: string;
+  /** o admin observando a sala: não conta como participante nem para o limite */
+  observer?: boolean;
 };
 
-type EventDoc = RoomEvent & { at: number };
+/** `audience: 'peers'`: o evento só vai a quem NÃO é observador. */
+type EventDoc = RoomEvent & { at: number; audience?: 'peers' };
 
 /** Uma sala = um documento. Toda operação é um único update atômico dele. */
 export type RoomDoc = {
@@ -33,7 +59,35 @@ export type RoomDoc = {
   peers: Record<string, PeerDoc>;
   events: EventDoc[];
   updatedAt: Date;
+  /** ausente em salas anteriores ao painel de admin */
+  createdAt?: number;
 };
+
+/** Sala fechada pelo admin: coleção própria, SEM o TTL de 1 h das salas (fica fechada até reabrir). */
+export type ClosedDoc = { _id: string; reason?: string; at: number };
+export type BanDoc = { _id: string; kind: Ban['kind']; value: string; reason: string; createdAt: number; bannedName?: string; room?: string };
+/** Tombstone de quem o admin removeu: `at` (Date) alimenta o índice TTL; `atMs` é o relógio do store (e dos testes). */
+export type RemovedDoc = {
+  _id: string;
+  room: string;
+  peerId: string;
+  reason: RemovalReason;
+  detail?: string;
+  tokenHash: string;
+  atMs: number;
+  at: Date;
+};
+
+export type AdminCollections = { closed: Collection<ClosedDoc>; bans: Collection<BanDoc>; removed: Collection<RemovedDoc> };
+export const adminCollections = (db: Db): AdminCollections => ({
+  closed: db.collection<ClosedDoc>('admin_closed'),
+  bans: db.collection<BanDoc>('admin_bans'),
+  removed: db.collection<RemovedDoc>('admin_removed'),
+});
+
+export type MongoStoreOptions = RoomStoreOptions & { admin?: AdminCollections };
+/** Os tombstones somem do banco depois disto (a janela em que ainda valem é TOMBSTONE_MS). */
+const TOMBSTONE_TTL_SECONDS = 300;
 
 /** Eventos mais velhos que isto saem do log mesmo antes de chegar a MAX_EVENTS (limita o tamanho do documento). */
 const EVENT_MAX_AGE_MS = 5 * 60_000;
@@ -64,14 +118,26 @@ const peerInfo = (id: string, p: PeerDoc): PeerInfo => ({
   video: p.video,
   sharing: p.sharing,
   screenSlots: p.screenSlots ?? (p.sharing ? 1 : 0),
+  ...(p.observer ? { observer: true } : {}),
 });
 
-/** Nº de peers vivos (lastSeen ≥ limit) dentro de um update/filtro. */
+/** Eventos que esta pessoa pode ler: depois do cursor, não dela, endereçados a ela ou a todos (e sem os só-para-participantes se ela é observadora). */
+function visibleEvents(events: EventDoc[], peerId: string, since: number, observer: boolean): RoomEvent[] {
+  const out: RoomEvent[] = [];
+  for (const { at: _at, audience, ...event } of events) {
+    if (event.seq <= since || event.from === peerId || (event.to !== undefined && event.to !== peerId)) continue;
+    if (audience === 'peers' && observer) continue;
+    out.push(event);
+  }
+  return out;
+}
+
+/** Nº de PARTICIPANTES vivos (lastSeen ≥ limit, sem observadores) dentro de um update/filtro. */
 const aliveCountExpr = (limit: number) => ({
   $size: {
     $filter: {
       input: { $objectToArray: { $ifNull: ['$peers', {}] } },
-      cond: { $gte: ['$$this.v.lastSeen', limit] },
+      cond: { $and: [{ $gte: ['$$this.v.lastSeen', limit] }, { $ne: ['$$this.v.observer', true] }] },
     },
   },
 });
@@ -81,7 +147,14 @@ const aliveCountExpr = (limit: number) => ({
  * mesmo update. `payload` é uma EXPRESSÃO de agregação: dado do usuário tem que vir dentro de `$literal`,
  * senão um texto começando com `$` seria lido como caminho de campo do documento.
  */
-function emitStages(type: RoomEventType, from: string, payload: Document, to: string | undefined, now: number): Document[] {
+function emitStages(
+  type: RoomEventType,
+  from: string,
+  payload: Document,
+  to: string | undefined,
+  now: number,
+  audience?: 'peers',
+): Document[] {
   return [
     { $set: { seq: { $add: [{ $ifNull: ['$seq', 0] }, 1] } } },
     // 1) acrescenta o evento (já sem os mais velhos que EVENT_MAX_AGE_MS)
@@ -95,7 +168,7 @@ function emitStages(type: RoomEventType, from: string, payload: Document, to: st
                 cond: { $gte: ['$$this.at', now - EVENT_MAX_AGE_MS] },
               },
             },
-            [{ seq: '$seq', type, from, ...(to ? { to } : {}), payload, at: now }],
+            [{ seq: '$seq', type, from, ...(to ? { to } : {}), ...(audience ? { audience } : {}), payload, at: now }],
           ],
         },
       },
@@ -142,26 +215,52 @@ export class MongoRoomStore implements RoomStore {
   constructor(
     private rooms: Collection<RoomDoc>,
     private now: () => number = Date.now,
-    private opts: RoomStoreOptions = {},
+    private opts: MongoStoreOptions = {},
   ) {}
 
-  /** Índice TTL que apaga salas abandonadas. Idempotente; chame uma vez ao criar o store. */
-  async ensureIndexes() {
-    await this.rooms.createIndex({ updatedAt: 1 }, { expireAfterSeconds: ROOM_IDLE_SECONDS });
+  /** As coleções de administração; sem elas (só em testes antigos) os recursos de admin não existem. */
+  private get adm(): AdminCollections {
+    if (!this.opts.admin) throw new Error('admin_collections_missing');
+    return this.opts.admin;
   }
 
-  async join(room: string, name: string) {
+  /** Índices TTL: salas abandonadas (1 h) e tombstones do admin (5 min). Idempotente; chame uma vez ao criar o store. */
+  async ensureIndexes() {
+    await this.rooms.createIndex({ updatedAt: 1 }, { expireAfterSeconds: ROOM_IDLE_SECONDS });
+    if (this.opts.admin) await this.opts.admin.removed.createIndex({ at: 1 }, { expireAfterSeconds: TOMBSTONE_TTL_SECONDS });
+  }
+
+  async join(room: string, name: string, ctx?: JoinContext) {
+    const observer = ctx?.observer === true;
+    const ip = cleanIp(ctx?.ip);
+    const deviceId = isUuid(ctx?.deviceId) ? ctx.deviceId : undefined;
+    // banimento e sala fechada valem para participantes; o observador (o admin) pula as duas checagens
+    if (!observer && this.opts.admin) {
+      const ids = [ip && banId('ip', ip), deviceId && banId('device', deviceId)].filter((v): v is string => !!v);
+      if (ids.length > 0 && (await this.opts.admin.bans.findOne({ _id: { $in: ids } }))) throw new BannedError();
+      const closed = await this.opts.admin.closed.findOne({ _id: room });
+      if (closed) throw new RoomClosedError(closed.reason);
+    }
     await this.sweep(room);
     const peerId = randomUUID();
     const token = randomUUID();
     const t = this.now();
     const limit = t - PEER_TTL_MS;
-    const info: PeerInfo = { id: peerId, name, joinedAt: t, audio: true, video: true, sharing: false, screenSlots: 0 };
+    const info: PeerInfo = {
+      id: peerId,
+      name,
+      joinedAt: t,
+      audio: true,
+      video: true,
+      sharing: false,
+      screenSlots: 0,
+      ...(observer ? { observer: true } : {}),
+    };
 
     // O MongoDB não aceita `$expr` no filtro de um upsert, então são dois passos: garante a sala e depois
     // entra num update comum. Com limite (opcional), esse update também checa a lotação (atômico, vale entre
     // instâncias); sem limite, não há checagem nenhuma.
-    const maxPeers = this.opts.maxPeers;
+    const maxPeers = observer ? undefined : this.opts.maxPeers; // observador nunca conta para o limite
     for (let attempt = 0; attempt < 5; attempt++) {
       await this.ensureRoom(room);
       const doc = await this.rooms.findOneAndUpdate(
@@ -178,6 +277,9 @@ export class MongoRoomStore implements RoomStore {
                 sharing: false,
                 screenSlots: 0,
                 tokenHash: hashToken(token),
+                ...(observer ? { observer: true } : {}),
+                ...(ip ? { ip: literal(ip) } : {}),
+                ...(deviceId ? { deviceId: literal(deviceId) } : {}),
               },
             },
           },
@@ -194,7 +296,7 @@ export class MongoRoomStore implements RoomStore {
       // Não casou: ou a sala está cheia (só com limite), ou foi apagada entre os dois passos (aí tenta de novo).
       if (maxPeers === undefined) continue;
       const current = await this.rooms.findOne({ _id: room }, { projection: { peers: 1 } });
-      const alive = Object.values(current?.peers ?? {}).filter((p) => p.lastSeen >= limit).length;
+      const alive = Object.values(current?.peers ?? {}).filter((p) => p.lastSeen >= limit && !p.observer).length;
       if (current && alive >= maxPeers) throw new RoomFullError();
     }
     throw new Error('join_contention');
@@ -205,7 +307,7 @@ export class MongoRoomStore implements RoomStore {
     const doc = await this.rooms.findOne({ _id: room }, { projection: { [`peers.${peerId}`]: 1 } });
     const peer = doc?.peers?.[peerId];
     if (!peer || peer.lastSeen < this.now() - PEER_TTL_MS || !sameHash(peer.tokenHash, hashToken(token))) {
-      throw new UnknownPeerError();
+      throw await this.gone(room, peerId, token);
     }
   }
 
@@ -218,7 +320,8 @@ export class MongoRoomStore implements RoomStore {
       { $set: { [`peers.${peerId}.lastSeen`]: t } },
       { returnDocument: 'after', projection: { seq: 1, events: 1, peers: 1 } },
     );
-    if (!doc) throw new UnknownPeerError();
+    if (!doc) throw await this.gone(room, peerId);
+    const observer = doc.peers[peerId]?.observer === true;
 
     const expired = Object.entries(doc.peers).filter(([, p]) => p.lastSeen < limit);
     if (expired.length > 0) {
@@ -227,10 +330,7 @@ export class MongoRoomStore implements RoomStore {
       doc = (await this.rooms.findOne({ _id: room }, { projection: { seq: 1, events: 1 } })) ?? doc;
     }
 
-    const events: RoomEvent[] = doc.events
-      .filter((e) => e.seq > since && e.from !== peerId && (e.to === undefined || e.to === peerId))
-      .map(({ at: _at, ...event }) => event);
-    return { events, cursor: doc.seq };
+    return { events: visibleEvents(doc.events, peerId, since, observer), cursor: doc.seq };
   }
 
   /** Só leitura (um `findOne` com projeção mínima): não renova `lastSeen`, não escreve, não varre. */
@@ -238,14 +338,11 @@ export class MongoRoomStore implements RoomStore {
     if (!UUID.test(peerId)) throw new UnknownPeerError();
     const doc = await this.rooms.findOne(
       { _id: room },
-      { projection: { seq: 1, events: 1, [`peers.${peerId}.lastSeen`]: 1 } },
+      { projection: { seq: 1, events: 1, [`peers.${peerId}.lastSeen`]: 1, [`peers.${peerId}.observer`]: 1 } },
     );
     const peer = doc?.peers?.[peerId];
-    if (!doc || !peer || peer.lastSeen < this.now() - PEER_TTL_MS) throw new UnknownPeerError();
-    const events: RoomEvent[] = doc.events
-      .filter((e) => e.seq > since && e.from !== peerId && (e.to === undefined || e.to === peerId))
-      .map(({ at: _at, ...event }) => event);
-    return { events, cursor: doc.seq };
+    if (!doc || !peer || peer.lastSeen < this.now() - PEER_TTL_MS) throw await this.gone(room, peerId);
+    return { events: visibleEvents(doc.events, peerId, since, peer.observer === true), cursor: doc.seq };
   }
 
   async signal(room: string, from: string, to: string, data: SignalData) {
@@ -290,7 +387,7 @@ export class MongoRoomStore implements RoomStore {
       ],
       { projection: { _id: 1 } },
     );
-    if (!doc) throw new UnknownPeerError();
+    if (!doc) throw await this.gone(room, from);
   }
 
   async setState(room: string, from: string, state: PeerMediaState) {
@@ -313,7 +410,7 @@ export class MongoRoomStore implements RoomStore {
       ],
       { projection: { _id: 1 } },
     );
-    if (!doc) throw new UnknownPeerError();
+    if (!doc) throw await this.gone(room, from);
   }
 
   async restart(room: string, from: string) {
@@ -327,7 +424,7 @@ export class MongoRoomStore implements RoomStore {
       ],
       { returnDocument: 'after', projection: { gen: 1 } },
     );
-    if (!doc) throw new UnknownPeerError();
+    if (!doc) throw await this.gone(room, from);
     return doc.gen;
   }
 
@@ -336,12 +433,218 @@ export class MongoRoomStore implements RoomStore {
     await this.removePeer(room, peerId);
   }
 
+  // ---- administração ----
+
+  async listRooms(): Promise<AdminRoomSummary[]> {
+    const limit = this.now() - PEER_TTL_MS;
+    const docs = await this.rooms.find({}, { projection: { peers: 1, createdAt: 1, updatedAt: 1 } }).toArray();
+    const closedDocs = new Map((await this.adm.closed.find({}).toArray()).map((c) => [c._id, c]));
+    const out: AdminRoomSummary[] = [];
+    for (const doc of docs) {
+      const summary = this.summarize(doc._id, doc, closedDocs.get(doc._id), limit);
+      // sala com todo mundo expirado e ainda não varrida: fantasma, não aparece
+      if (summary.peerCount + summary.observerCount > 0 || summary.closed) out.push(summary);
+      closedDocs.delete(doc._id);
+    }
+    for (const closed of closedDocs.values()) out.push(this.summarize(closed._id, undefined, closed, limit));
+    return out.sort((a, b) => b.lastActivity - a.lastActivity || a.name.localeCompare(b.name));
+  }
+
+  async getRoom(room: string): Promise<AdminRoomDetail | null> {
+    const limit = this.now() - PEER_TTL_MS;
+    const [doc, closed] = await Promise.all([this.rooms.findOne({ _id: room }), this.adm.closed.findOne({ _id: room })]);
+    if (!doc && !closed) return null;
+    const peers: AdminPeer[] = Object.entries(doc?.peers ?? {})
+      .filter(([, p]) => p.lastSeen >= limit)
+      .map(([id, p]) => ({
+        id,
+        name: p.name,
+        joinedAt: p.joinedAt,
+        lastSeen: p.lastSeen,
+        audio: p.audio,
+        video: p.video,
+        sharing: p.sharing,
+        screenSlots: p.screenSlots ?? (p.sharing ? 1 : 0),
+        observer: p.observer === true,
+        ip: p.ip ?? null,
+        deviceId: p.deviceId ?? null,
+      }));
+    return { ...this.summarize(room, doc ?? undefined, closed ?? undefined, limit), peers };
+  }
+
+  async kick(room: string, peerId: string, reason?: string) {
+    if (!UUID.test(peerId)) return false;
+    const peer = await this.findAlivePeer(room, peerId);
+    if (!peer) return false;
+    await this.tombstone(room, peerId, peer.tokenHash, 'kicked', cleanReason(reason) || undefined);
+    return this.removePeer(room, peerId);
+  }
+
+  async closeRoom(room: string, reason?: string) {
+    const why = cleanReason(reason) || undefined;
+    const t = this.now();
+    // marca fechada ANTES de remover: um join que chegue agora já é recusado
+    await this.adm.closed.replaceOne({ _id: room }, { ...(why ? { reason: why } : {}), at: t }, { upsert: true });
+    const doc = await this.rooms.findOne({ _id: room }, { projection: { peers: 1 } });
+    if (!doc) return 0;
+    const limit = t - PEER_TTL_MS;
+    let removed = 0;
+    const ops = Object.entries(doc.peers).map(([id, p]) => {
+      if (!p.observer && p.lastSeen >= limit) removed += 1;
+      return this.tombstoneOp(room, id, p.tokenHash, 'closed', why);
+    });
+    if (ops.length > 0) await this.adm.removed.bulkWrite(ops);
+    await this.rooms.deleteOne({ _id: room });
+    return removed;
+  }
+
+  async reopenRoom(room: string) {
+    return (await this.adm.closed.deleteOne({ _id: room })).deletedCount > 0;
+  }
+
+  async broadcast(room: string | null, text: string) {
+    const message = cleanMessage(text);
+    if (!message) return 0;
+    const names =
+      room === null ? (await this.rooms.find({}, { projection: { _id: 1 } }).toArray()).map((d) => d._id) : [room];
+    let reached = 0;
+    for (const name of names) {
+      const t = this.now();
+      const doc = await this.rooms.findOne({ _id: name }, { projection: { peers: 1 } });
+      const count = Object.values(doc?.peers ?? {}).filter((p) => p.lastSeen >= t - PEER_TTL_MS && !p.observer).length;
+      if (!doc || count === 0) continue;
+      await this.rooms.findOneAndUpdate(
+        { _id: name },
+        emitStages('admin', 'admin', literal({ kind: 'message', text: message, at: t }), undefined, t, 'peers'),
+        { projection: { _id: 1 } },
+      );
+      reached += count;
+    }
+    return reached;
+  }
+
+  async command(room: string, peerId: string, cmd: AdminCommand) {
+    const clean = cleanCommand(cmd);
+    if (!clean || !UUID.test(peerId)) return false;
+    const t = this.now();
+    const doc = await this.rooms.findOneAndUpdate(
+      { _id: room, [`peers.${peerId}.lastSeen`]: { $gte: t - PEER_TTL_MS } } as Filter<RoomDoc>,
+      emitStages('admin', 'admin', literal({ kind: 'command', at: t, ...clean }), peerId, t),
+      { projection: { _id: 1 } },
+    );
+    return doc !== null;
+  }
+
+  async ban(entry: BanEntry): Promise<BanResult> {
+    const ip = cleanIp(entry.ip);
+    const deviceId = isUuid(entry.deviceId) ? entry.deviceId : undefined;
+    const reason = cleanReason(entry.reason, 'Banido pelo administrador');
+    const bannedName = typeof entry.bannedName === 'string' ? entry.bannedName.trim().slice(0, 60) || undefined : undefined;
+    const room = typeof entry.room === 'string' && entry.room ? entry.room : undefined;
+    const bans: Ban[] = [];
+    for (const [kind, value] of [['ip', ip], ['device', deviceId]] as const) {
+      if (!value) continue;
+      const ban: Ban = {
+        id: banId(kind, value),
+        kind,
+        value,
+        reason,
+        createdAt: this.now(),
+        ...(bannedName ? { bannedName } : {}),
+        ...(room ? { room } : {}),
+      };
+      const { id, ...rest } = ban;
+      await this.adm.bans.replaceOne({ _id: id }, rest, { upsert: true });
+      bans.push(ban);
+    }
+    if (bans.length === 0) return { bans: [], removed: 0 };
+    return { bans, removed: await this.removeMatching(ip, deviceId, reason) };
+  }
+
+  async banPeer(room: string, peerId: string, reason?: string): Promise<BanResult | null> {
+    if (!UUID.test(peerId)) return null;
+    const peer = await this.findAlivePeer(room, peerId);
+    if (!peer || peer.observer) return null;
+    const result = await this.ban({ ip: peer.ip, deviceId: peer.deviceId, reason, bannedName: peer.name, room });
+    // sem IP nem dispositivo para banir, a pessoa ainda assim sai (e, se o ban já a removeu, isto não conta de novo)
+    await this.tombstone(room, peerId, peer.tokenHash, 'banned', cleanReason(reason) || undefined);
+    if (await this.removePeer(room, peerId)) result.removed += 1;
+    return result;
+  }
+
+  async listBans(): Promise<Ban[]> {
+    const docs = await this.adm.bans.find({}).sort({ createdAt: -1, _id: 1 }).toArray();
+    return docs.map(({ _id, ...rest }) => ({ id: _id, ...rest }));
+  }
+
+  async unban(id: string) {
+    if (typeof id !== 'string' || !id) return false;
+    return (await this.adm.bans.deleteOne({ _id: id })).deletedCount > 0;
+  }
+
+  private async findAlivePeer(room: string, peerId: string): Promise<PeerDoc | undefined> {
+    const doc = await this.rooms.findOne({ _id: room }, { projection: { [`peers.${peerId}`]: 1 } });
+    const peer = doc?.peers?.[peerId];
+    return peer && peer.lastSeen >= this.now() - PEER_TTL_MS ? peer : undefined;
+  }
+
+  private summarize(name: string, doc: Pick<RoomDoc, 'peers' | 'createdAt' | 'updatedAt'> | undefined, closed: ClosedDoc | undefined, limit: number): AdminRoomSummary {
+    const alive = Object.values(doc?.peers ?? {}).filter((p) => p.lastSeen >= limit);
+    const observerCount = alive.filter((p) => p.observer).length;
+    const created = doc?.createdAt ?? doc?.updatedAt?.getTime() ?? closed?.at ?? 0;
+    return {
+      name,
+      peerCount: alive.length - observerCount,
+      observerCount,
+      createdAt: created,
+      lastActivity: Math.max(doc?.updatedAt?.getTime() ?? 0, closed?.at ?? 0, created),
+      closed: !!closed,
+      ...(closed?.reason ? { closedReason: closed.reason } : {}),
+    };
+  }
+
+  /** Remove (com tombstone 'banned') quem casar por IP ou dispositivo, em todas as salas. Observadores ficam. */
+  private async removeMatching(ip: string | undefined, deviceId: string | undefined, reason: string) {
+    const docs = await this.rooms.find({}, { projection: { peers: 1 } }).toArray();
+    let removed = 0;
+    for (const doc of docs) {
+      for (const [id, p] of Object.entries(doc.peers)) {
+        if (p.observer) continue;
+        if (!((ip && p.ip === ip) || (deviceId && p.deviceId === deviceId))) continue;
+        await this.tombstone(doc._id, id, p.tokenHash, 'banned', reason);
+        if (await this.removePeer(doc._id, id)) removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  private tombstoneOp(room: string, peerId: string, tokenHash: string, reason: RemovalReason, detail?: string) {
+    const _id = `${room}:${peerId}`;
+    const doc: RemovedDoc = { _id, room, peerId, reason, ...(detail ? { detail } : {}), tokenHash, atMs: this.now(), at: new Date() };
+    return { replaceOne: { filter: { _id }, replacement: doc, upsert: true } };
+  }
+
+  /** Guarda por ~2 min por que o peer saiu, para o 410 dele carregar o motivo (e só para quem prova ser ele). */
+  private async tombstone(room: string, peerId: string, tokenHash: string, reason: RemovalReason, detail?: string) {
+    await this.adm.removed.bulkWrite([this.tombstoneOp(room, peerId, tokenHash, reason, detail)]);
+  }
+
+  /** Erro de peer desconhecido; com o motivo se foi removido pelo admin há pouco (e, havendo token, só se ele bater). */
+  private async gone(room: string, peerId: string, token?: string): Promise<UnknownPeerError> {
+    if (!this.opts.admin || !UUID.test(peerId)) return new UnknownPeerError();
+    const tomb = await this.opts.admin.removed.findOne({ _id: `${room}:${peerId}` });
+    if (tomb && this.now() - tomb.atMs <= TOMBSTONE_MS && (token === undefined || sameHash(tomb.tokenHash, hashToken(token)))) {
+      return new UnknownPeerError(tomb.reason, tomb.detail);
+    }
+    return new UnknownPeerError();
+  }
+
   /** Cria a sala vazia se ainda não existir. Duas criações simultâneas: a que perde a corrida só ignora. */
   private async ensureRoom(room: string) {
     try {
       await this.rooms.updateOne(
         { _id: room },
-        { $setOnInsert: { seq: 0, gen: 0, peers: {}, events: [], updatedAt: new Date() } },
+        { $setOnInsert: { seq: 0, gen: 0, peers: {}, events: [], updatedAt: new Date(), createdAt: this.now() } },
         { upsert: true },
       );
     } catch (e) {
@@ -356,14 +659,14 @@ export class MongoRoomStore implements RoomStore {
       { $set: { [`peers.${peerId}.lastSeen`]: t } },
       { projection: { _id: 1 } },
     );
-    if (!doc) throw new UnknownPeerError();
+    if (!doc) throw await this.gone(room, peerId);
   }
 
   /**
    * Remove o peer e avisa os outros. Com `expiredBefore`, só remove se ele ainda estiver expirado:
    * assim, duas instâncias varrendo ao mesmo tempo, ou um poll que chega no último instante, não se atropelam.
    */
-  private async removePeer(room: string, peerId: string, expiredBefore?: number) {
+  private async removePeer(room: string, peerId: string, expiredBefore?: number): Promise<boolean> {
     const t = this.now();
     const filter: Document = { _id: room, [`peers.${peerId}`]: { $exists: true } };
     if (expiredBefore !== undefined) filter[`peers.${peerId}.lastSeen`] = { $lt: expiredBefore };
@@ -374,6 +677,7 @@ export class MongoRoomStore implements RoomStore {
     );
     // Sala vazia some (e uma nova começa com gen 0). Condicional: se alguém entrou entretanto, não apaga.
     if (doc && Object.keys(doc.peers).length === 0) await this.rooms.deleteOne({ _id: room, peers: {} } as Filter<RoomDoc>);
+    return doc !== null;
   }
 
   /** Remove da sala os peers expirados (quem para de consultar por mais de PEER_TTL_MS). */

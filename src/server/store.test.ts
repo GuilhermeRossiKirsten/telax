@@ -17,6 +17,13 @@ describe('createStore', () => {
     expect(createStore({ MONGODB_URI: 'mongodb://127.0.0.1:1' })).toBeInstanceOf(MongoRoomStore);
   });
 
+  it('o MongoRoomStore da fábrica já vem com as coleções de admin (bans, salas fechadas, tombstones)', () => {
+    const admin = (createStore({ MONGODB_URI: 'mongodb://127.0.0.1:1' }) as unknown as { opts: { admin?: Record<string, { collectionName: string }> } }).opts.admin;
+    expect(admin?.closed.collectionName).toBe('admin_closed');
+    expect(admin?.bans.collectionName).toBe('admin_bans');
+    expect(admin?.removed.collectionName).toBe('admin_removed');
+  });
+
   describe('MAX_PEERS (limite opcional de pessoas por sala)', () => {
     const limit = (s: unknown) => (s as { opts?: { maxPeers?: number } }).opts?.maxPeers;
     it('ausente, vazio ou inválido = sem limite', () => {

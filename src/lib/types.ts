@@ -8,6 +8,8 @@ export type PeerInfo = {
   sharing: boolean;
   /** máscara de bits dos slots de tela ativos (ver src/lib/screens.ts) */
   screenSlots: number;
+  /** o administrador observando a sala: recebe mídia, mas não é um participante (sem tile, sem lista, sem som) */
+  observer?: boolean;
 };
 
 /**
@@ -16,7 +18,7 @@ export type PeerInfo = {
  */
 export type PeerMediaState = Pick<PeerInfo, 'audio' | 'video' | 'sharing'> & { screenSlots?: number };
 
-export type RoomEventType = 'join' | 'leave' | 'state' | 'chat' | 'signal' | 'restart';
+export type RoomEventType = 'join' | 'leave' | 'state' | 'chat' | 'signal' | 'restart' | 'admin';
 
 export type RoomEvent = {
   seq: number;

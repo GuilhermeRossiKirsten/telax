@@ -415,3 +415,178 @@ describe('envio em lote', () => {
     t.client.stop();
   });
 });
+
+/** Como `setup`, mas aceitando opções extras (deviceId, observer) e registrando o fim "terminal" (bloqueado/removido). */
+function setupWith(extra: Record<string, unknown>, handlers: Record<string, Handler>) {
+  const { fn, calls } = makeFetch(handlers);
+  const statuses: SignalingStatus[] = [];
+  const ended: unknown[] = [];
+  const joined: Array<[JoinResult, boolean]> = [];
+  const client = createSignalingClient({
+    room: 'sala',
+    name: 'Ana',
+    fetch: fn,
+    pollMs: 1000,
+    onJoined: (r, isRejoin) => joined.push([r, isRejoin]),
+    onEvent: () => {},
+    onStatus: (s) => statuses.push(s),
+    onEnded: (info: unknown) => ended.push(info),
+    ...extra,
+  } as Parameters<typeof createSignalingClient>[0]);
+  return { client, calls, statuses, ended, joined };
+}
+
+describe('identificação do dispositivo e do observador no join', () => {
+  it('envia o deviceId no corpo do join e NÃO manda observer quando não é observador', async () => {
+    const t = setupWith({ deviceId: '3f197123-2bf8-4730-aadf-6c61db50d59e' }, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ events: [], cursor: 5 }),
+    });
+    await t.client.start();
+    const body = JSON.parse(String(t.calls.find((c) => c.route === 'join')!.init.body));
+    expect(body).toEqual({ name: 'Ana', deviceId: '3f197123-2bf8-4730-aadf-6c61db50d59e' });
+    t.client.stop();
+  });
+
+  it('com observer: true o corpo leva observer: true (o servidor só aceita com sessão de admin)', async () => {
+    const t = setupWith({ deviceId: 'd', observer: true }, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ events: [], cursor: 5 }),
+    });
+    await t.client.start();
+    const body = JSON.parse(String(t.calls.find((c) => c.route === 'join')!.init.body));
+    expect(body).toMatchObject({ name: 'Ana', observer: true });
+    t.client.stop();
+  });
+
+  it('sem deviceId o corpo continua só com o nome (compatível)', async () => {
+    const t = setupWith({}, { join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    expect(JSON.parse(String(t.calls.find((c) => c.route === 'join')!.init.body))).toEqual({ name: 'Ana' });
+    t.client.stop();
+  });
+});
+
+describe('join bloqueado (banido, sala encerrada)', () => {
+  it('403 banned → status blocked com motivo banned, sem polling e sem novas tentativas', async () => {
+    const t = setupWith({}, { join: () => ok({ error: 'banned' }, 403), events: () => ok({ events: [], cursor: 0 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.statuses).toEqual(['connecting', 'blocked']);
+    expect(t.ended).toEqual([{ kind: 'blocked', reason: 'banned' }]);
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+    expect(t.calls.filter((c) => c.route === 'events')).toHaveLength(0);
+  });
+
+  it('403 room_closed leva o motivo do admin em detail', async () => {
+    const t = setupWith({}, {
+      join: () => ok({ error: 'room_closed', reason: 'Manutenção' }, 403),
+      events: () => ok({ events: [], cursor: 0 }),
+    });
+    await t.client.start();
+    expect(t.statuses.at(-1)).toBe('blocked');
+    expect(t.ended).toEqual([{ kind: 'blocked', reason: 'closed', detail: 'Manutenção' }]);
+  });
+
+  it('403 forbidden (observador sem sessão de admin) vira erro e para', async () => {
+    const t = setupWith({ observer: true }, { join: () => ok({ error: 'forbidden' }, 403), events: () => ok({ events: [], cursor: 0 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(t.statuses.at(-1)).toBe('error');
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+  });
+
+  it('403 de join com corpo ilegível não trava: vira erro', async () => {
+    const t = setupWith({}, { join: () => new Response('<html>', { status: 403 }), events: () => ok({ events: [], cursor: 0 }) });
+    await t.client.start();
+    expect(t.statuses.at(-1)).toBe('error');
+  });
+});
+
+describe('removido pelo admin (410 com motivo)', () => {
+  for (const reason of ['kicked', 'banned', 'closed'] as const) {
+    it(`410 ${reason} no poll → status removed, NUNCA reentra e para de consultar`, async () => {
+      const t = setupWith({}, {
+        join: () => ok(joinBody('p1')),
+        events: () => ok({ error: 'gone', reason }, 410),
+      });
+      await t.client.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(t.statuses.at(-1)).toBe('removed');
+      expect(t.ended).toEqual([{ kind: 'removed', reason }]);
+      expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1); // não reentrou
+      expect(t.calls.filter((c) => c.route === 'events')).toHaveLength(1); // não consultou de novo
+    });
+  }
+
+  it('o texto do admin (detail) acompanha o motivo; sem texto não aparece a chave detail', async () => {
+    const t = setupWith({}, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ error: 'gone', reason: 'kicked', detail: 'conversa fora do assunto' }, 410),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.ended).toEqual([{ kind: 'removed', reason: 'kicked', detail: 'conversa fora do assunto' }]);
+
+    const u = setupWith({}, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ error: 'gone', reason: 'kicked', detail: 123 }, 410), // lixo não vira texto
+    });
+    await u.client.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(u.ended).toEqual([{ kind: 'removed', reason: 'kicked' }]);
+  });
+
+  it('410 com motivo em um POST (chat) também remove e para o polling', async () => {
+    const t = setupWith({}, {
+      join: () => ok(joinBody('p1')),
+      events: () => new Promise<Response>(() => {}), // poll pendurado (espera longa)
+      chat: () => ok({ error: 'gone', reason: 'kicked' }, 410),
+    });
+    await t.client.start();
+    await t.client.chat('oi');
+    expect(t.statuses.at(-1)).toBe('removed');
+    expect(t.ended).toEqual([{ kind: 'removed', reason: 'kicked' }]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+  });
+
+  it('depois de removido, leave() não avisa o servidor (o peer já foi removido)', async () => {
+    const t = setupWith({}, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ error: 'gone', reason: 'banned' }, 410),
+      leave: () => ok({ ok: true }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(10); // o primeiro poll acontece e recebe o 410 com motivo
+    expect(t.statuses.at(-1)).toBe('removed');
+    t.client.leave();
+    expect(t.calls.filter((c) => c.route === 'leave')).toHaveLength(0);
+  });
+
+  it('410 SEM motivo (ou com motivo desconhecido) continua o fluxo de reentrada de sempre', async () => {
+    for (const body of [{ error: 'gone' }, { error: 'gone', reason: 'x' }, { error: 'gone', reason: 5 }]) {
+      const t = setupWith({}, {
+        join: (call) => ok(joinBody(call === 1 ? 'p1' : 'p2')),
+        events: (call, url) => (call === 1 ? ok(body, 410) : ok({ events: [], cursor: Number(url.searchParams.get('since')) })),
+      });
+      await t.client.start();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(t.joined.map(([r, rejoin]) => [r.peerId, rejoin])).toEqual([['p1', false], ['p2', true]]);
+      expect(t.ended).toEqual([]);
+      t.client.stop();
+    }
+  });
+
+  it('410 com corpo ilegível também cai na reentrada comum', async () => {
+    const t = setupWith({}, {
+      join: (call) => ok(joinBody(call === 1 ? 'p1' : 'p2')),
+      events: (call, url) =>
+        call === 1 ? new Response('nada', { status: 410 }) : ok({ events: [], cursor: Number(url.searchParams.get('since')) }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(t.joined).toHaveLength(2);
+    t.client.stop();
+  });
+});

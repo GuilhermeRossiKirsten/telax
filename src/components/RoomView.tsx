@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAdminCommands } from '@/hooks/use-admin-commands';
 import { useDevices } from '@/hooks/use-devices';
 import { useLocalMedia } from '@/hooks/use-local-media';
 import { useQuality } from '@/hooks/use-quality';
@@ -12,6 +13,7 @@ import { loadSoundPrefs, playPresenceChimes } from '@/lib/chime';
 import { useRoom } from '@/hooks/use-room';
 import { useViewState } from '@/hooks/use-view-state';
 import { toSendQuality } from '@/lib/quality';
+import { AdminEndedScreen, AdminMessageBanner, MonitorNotice } from './AdminNotice';
 import { ControlBar } from './ControlBar';
 import { Icon } from './Icon';
 import { SettingsDialog } from './SettingsDialog';
@@ -35,7 +37,16 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   }, [qualityApi.quality, applyQuality]);
   // estável: o useRoom reaplica os limites de envio nas conexões só quando a escolha muda
   const sendQuality = useMemo(() => toSendQuality(qualityApi.quality), [qualityApi.quality]);
-  const r = useRoom({ room, name, tracks: local.tracks, media, sendQuality });
+  // o administrador pode mandar parar telas, desligar a câmera ou mutar o microfone deste navegador
+  const onAdminCommand = useAdminCommands({
+    micOn: local.micOn,
+    camOn: local.camOn,
+    toggleMic: local.toggleMic,
+    toggleCam: local.toggleCam,
+    stopAllScreens: local.stopAllScreens,
+    stopScreen: local.stopScreen,
+  });
+  const r = useRoom({ room, name, tracks: local.tracks, media, sendQuality, onAdminCommand });
   const screens = useViewState(r.participants);
   const sounds = useSounds();
   const devices = useDevices();
@@ -43,6 +54,12 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   // sons de entrar/sair: a própria entrada, e outras pessoas entrando e saindo (saída escolhida nas Configurações)
   const participantIds = useMemo(() => r.participants.map((p) => p.id).sort(), [r.participants]);
   useRoomSounds(r.selfId, participantIds, devices.outputId);
+  const adminMessageAt = r.adminMessage?.at;
+  useEffect(() => {
+    if (adminMessageAt !== undefined && loadSoundPrefs().enabled) void playPresenceChimes({ joined: 1, left: 0 }, devices.outputId);
+    // toca uma vez por mensagem nova (o carimbo muda), não a cada troca de saída de áudio
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminMessageAt]);
 
   // os nomes dos dispositivos só aparecem depois da permissão de mídia; e a escolha salva vale assim que a câmera existe
   const { refresh: refreshDevices } = devices;
@@ -66,7 +83,7 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   }, []);
 
   const { stopAll } = local;
-  const ended = r.status === 'full' || r.status === 'error';
+  const ended = r.status === 'full' || r.status === 'error' || r.status === 'removed' || r.status === 'blocked';
   useEffect(() => {
     if (ended) stopAll();
   }, [ended, stopAll]);
@@ -107,6 +124,14 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         </div>
       </main>
     );
+  }
+
+  const backHref = `https://rossik.dev.br/telax?room=${encodeURIComponent(room)}`;
+  if (r.status === 'removed' && r.removed) {
+    return <AdminEndedScreen info={{ kind: 'removed', reason: r.removed.reason, detail: r.removed.detail }} backHref={backHref} />;
+  }
+  if (r.status === 'blocked' && r.blocked) {
+    return <AdminEndedScreen info={{ kind: 'blocked', reason: r.blocked.reason, detail: r.blocked.detail }} backHref={backHref} />;
   }
 
   if (r.status === 'error') {
@@ -158,6 +183,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           {local.error}
         </div>
       )}
+      {r.adminMessage && <AdminMessageBanner text={r.adminMessage.text} onDismiss={r.dismissAdminMessage} />}
+      {r.observerPresent && <MonitorNotice />}
       {r.error && (
         <div className="banner warn" role="alert">
           {r.error} <button className="ghost" onClick={r.dismissError}>Fechar</button>

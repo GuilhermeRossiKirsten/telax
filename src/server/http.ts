@@ -1,5 +1,6 @@
 import { normalizeRoom } from '@/lib/validation';
-import { RoomFullError, UnknownPeerError, type RoomStore } from './room-store';
+import { ADMIN_REASON_MAX } from '@/lib/admin-types';
+import { BannedError, RoomClosedError, RoomFullError, UnknownPeerError, type RoomStore } from './room-store';
 import { getStore } from './store';
 
 export type RoomContext = { params: Promise<{ room: string }> };
@@ -36,7 +37,16 @@ async function readBody(req: Request): Promise<Body | null> {
 /** Traduz erros do store para respostas HTTP; qualquer outro erro sobe. */
 export function storeErrorResponse(e: unknown): Response {
   if (e instanceof RoomFullError) return json({ error: 'room_full' }, 409);
-  if (e instanceof UnknownPeerError) return json({ error: 'gone' }, 410);
+  // banido: sem revelar o detalhe (IP/dispositivo) a quem tenta entrar
+  if (e instanceof BannedError) return json({ error: 'banned' }, 403);
+  if (e instanceof RoomClosedError) return json(e.reason ? { error: 'room_closed', reason: e.reason } : { error: 'room_closed' }, 403);
+  // removido pelo admin há pouco: o motivo deixa o cliente mostrar o aviso certo e não reentrar
+  if (e instanceof UnknownPeerError) {
+    if (!e.reason) return json({ error: 'gone' }, 410);
+    // o texto livre do admin só acompanha um motivo (quem foi removido por ele); nunca passa do limite
+    const detail = typeof e.detail === 'string' && e.detail ? e.detail.slice(0, ADMIN_REASON_MAX) : undefined;
+    return json(detail ? { error: 'gone', reason: e.reason, detail } : { error: 'gone', reason: e.reason }, 410);
+  }
   throw e;
 }
 
@@ -46,7 +56,7 @@ export function storeErrorResponse(e: unknown): Response {
  * e peer inexistente dão o mesmo 410 para não revelar qual falhou.
  */
 export function postRoute(
-  handler: (store: RoomStore, room: string, body: Body) => Response | Promise<Response>,
+  handler: (store: RoomStore, room: string, body: Body, req: Request) => Response | Promise<Response>,
   idField?: 'from' | 'peerId',
 ) {
   return async (req: Request, ctx: RoomContext): Promise<Response> => {
@@ -57,7 +67,7 @@ export function postRoute(
     try {
       const store = getStore();
       if (idField) await store.authenticate(room, body[idField] as string, body.token as string);
-      return await handler(store, room, body);
+      return await handler(store, room, body, req);
     } catch (e) {
       return storeErrorResponse(e);
     }

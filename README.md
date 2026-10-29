@@ -65,6 +65,11 @@ Tudo é opcional. Copie `.env.example` para `.env.local` se precisar de TURN ou 
 | `TURN_USERNAME` | usuário do TURN |
 | `TURN_CREDENTIAL` | senha do TURN |
 | `MAX_PEERS` | opcional: limita participantes por sala (inteiro positivo). Ausente = sem limite |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | OAuth App do GitHub para o login do painel `/admin` (ver "Painel de administração") |
+| `ADMIN_GITHUB_USER` | seu login do GitHub: **só ele** entra no admin. Sem esta variável o admin fica desligado |
+| `ADMIN_GITHUB_ID` | opcional: id numérico do GitHub (se definido, também precisa bater) |
+| `ADMIN_SESSION_SECRET` | segredo com 32+ caracteres para assinar a sessão do admin (ex.: `openssl rand -base64 48`) |
+| `ADMIN_BASE_URL` | opcional: URL pública, se o redirecionamento do login não puder ser deduzido |
 | `MONGODB_URI` | guarda as salas no MongoDB, compartilhadas entre instâncias (**necessário na Vercel**). Sem ela, as salas ficam na memória do processo |
 | `MONGODB_DB` | nome do banco (padrão `telax`) |
 
@@ -117,6 +122,25 @@ e todo `peerId` é validado como UUID antes de virar parte de um caminho do banc
 
 Se o banco ficar inacessível, as chamadas falham e o app mostra "Reconectando"; depois de 3 reentradas
 seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o botão "Tentar novamente".
+
+## Painel de administração
+
+Tela `/admin` com login pelo GitHub (**só o seu usuário entra**): lista as salas, fecha e reabre salas, manda mensagem a uma sala ou a todas, expulsa pessoas, bane por IP e dispositivo, mostra **as câmeras e telas** ao abrir uma sala e **para a transmissão** de uma pessoa específica.
+
+**Todos os endpoints `/api/admin/*` são protegidos** (sem sessão: 401; sessão de outro usuário: 403; admin sem configuração: 503), e um teste varre todas as rotas para impedir que alguma fique sem a proteção.
+
+**Configuração (uma vez):**
+
+1. No GitHub: *Settings → Developer settings → OAuth Apps → New OAuth App*. Em **Authorization callback URL** use `https://SEU-DOMINIO/api/admin/auth/callback` (para testar localmente, um segundo app com `http://localhost:3000/api/admin/auth/callback`).
+2. Na Vercel (*Settings → Environment Variables*) ou em `.env.local`: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `ADMIN_GITHUB_USER` (o seu login), `ADMIN_SESSION_SECRET` (32+ caracteres aleatórios).
+3. Faça um novo deploy e abra `/admin`.
+
+**Limites que valem saber:**
+
+- **O endereço MAC não é obtenível** por nenhum site (navegadores não o expõem). O bloqueio usa **IP + identificador do dispositivo** (um UUID guardado no navegador). IP compartilhado (mesma rede) bloqueia inocentes; VPN, IP dinâmico e limpar os dados do navegador contornam o bloqueio.
+- Parar a transmissão de alguém depende do app da pessoa obedecer; **expulsar e banir** são feitos pelo servidor e não dependem dela.
+- Enquanto você vê uma sala ao vivo, **os participantes veem um aviso** de que um administrador pode estar vendo as câmeras e telas.
+- Nunca versione `GITHUB_CLIENT_SECRET` nem `ADMIN_SESSION_SECRET`.
 
 ## Como funciona
 
@@ -199,11 +223,11 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 352 passaram, 5 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 571 passaram, 5 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (72 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 72 passaram |
+| E2E, 2 participantes (96 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 96 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |

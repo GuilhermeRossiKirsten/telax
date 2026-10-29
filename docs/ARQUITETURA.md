@@ -22,6 +22,7 @@ Videoconferência **WebRTC em malha (P2P)** feita com Next.js 16, React 19 e Typ
 14. [Decisões, trade-offs e limitações](#14-decisões-trade-offs-e-limitações)
 15. [Consumo de requisições na Vercel](#15-consumo-de-requisições-na-vercel)
 16. [Sons de entrada e saída](#16-sons-de-entrada-e-saída)
+17. [Painel de administração](#17-painel-de-administração)
 
 ---
 
@@ -707,3 +708,112 @@ Indicador sonoro **baixo**, sintetizado com Web Audio (sem arquivos): duas notas
 | Não toca | Para quem já estava na sala no primeiro retrato da lista, nem na reconexão silenciosa ao servidor. |
 
 Vai para a **saída de áudio escolhida** nas Configurações (`AudioContext.setSinkId`, quando existe). Pode ser desligado em **Configurações → Áudio** ("Tocar um som baixo quando alguém entrar ou sair da sala"), lembrado em `telax:sounds`. Se o navegador mantiver o contexto de áudio suspenso (sem gesto prévio), o som simplesmente não sai.
+
+---
+
+## 17. Painel de administração
+
+Tela `/admin` para o dono do site: ver as salas, **fechar** salas, mandar **mensagem** à sala (ou a todas), **expulsar** pessoas, **banir** por IP e identificador do dispositivo, **ver as câmeras e telas** ao abrir uma sala e **parar a transmissão** de uma pessoa. Só entra o usuário GitHub configurado. Contrato completo: `docs/superpowers/specs/2026-10-29-admin-design.md`.
+
+### 17.1 Quem pode entrar (login pelo GitHub)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Admin (navegador)
+  participant S as /api/admin/auth/*
+  participant GH as GitHub
+
+  A->>S: GET /login
+  S-->>A: cookie telax_oauth_state + redirect para o GitHub (state)
+  A->>GH: autoriza o app (scope read:user)
+  GH-->>A: redirect /callback?code&state
+  A->>S: GET /callback
+  S->>S: confere state (timingSafeEqual)
+  S->>GH: troca o code por token
+  S->>GH: GET /user com o token
+  GH-->>S: login e id
+  S->>S: login igual a ADMIN_GITHUB_USER (e id, se definido)?
+  alt é o dono
+    S-->>A: cookie telax_admin assinado (HMAC, 12 h) e redirect /admin
+  else qualquer outra pessoa
+    S-->>A: redirect /admin?error=forbidden (sem sessão)
+  end
+  Note over S,GH: O token do GitHub nunca é guardado
+```
+
+A sessão é `base64url(JSON{login,id,exp}).base64url(HMAC-SHA256)`, num cookie `HttpOnly`, `SameSite=Lax` e `Secure` em produção. **Sem as variáveis de ambiente o admin fica desligado (falha fechada)**, nunca aberto.
+
+### 17.2 Todo endpoint de admin é protegido (negar por padrão)
+
+```mermaid
+flowchart TB
+  REQ["Requisição a /api/admin/*"] --> AR["adminRoute(handler)<br/>único jeito de criar uma rota ali"]
+  AR --> C1{"admin configurado?"}
+  C1 -->|"não"| R503["503 admin_disabled"]
+  C1 -->|"sim"| C2{"cookie válido?<br/>assinatura, expiração"}
+  C2 -->|"não"| R401["401 unauthorized"]
+  C2 -->|"sim"| C3{"é o usuário do admin?"}
+  C3 -->|"não"| R403["403 forbidden"]
+  C3 -->|"sim"| C4{"método altera dados?"}
+  C4 -->|"sim, e a origem não é o próprio site"| R403B["403 bad_origin"]
+  C4 -->|"não, ou origem ok"| H["handler → métodos admin do RoomStore"]
+```
+
+Garantias automáticas (testes):
+
+- **Varredura estrutural:** um teste descobre todos os `route.ts` sob `src/app/api/admin`, chama cada método exportado sem sessão (exige 401), com sessão de **outro** usuário (403) e com origem estranha (403), e **falha** se algum handler não vier de `adminRoute`. Uma rota nova esquecida sem o filtro quebra a suíte.
+- **E2E:** os 12 endpoints são testados contra um servidor real: sem sessão, outro usuário, segredo errado, sessão adulterada e sessão expirada.
+- **Caminhos de controle fora de /api/admin:** entrar como **observador** exige sessão de admin (senão 403 e ninguém entra); o corpo do cliente não escolhe o próprio IP nem vira observador; `chat`, `state` e `signal` de clientes comuns nunca criam evento `admin`.
+
+### 17.3 Visão geral
+
+```mermaid
+flowchart LR
+  subgraph Admin["Navegador do admin (/admin)"]
+    UI["AdminApp<br/>salas · bloqueios"]
+    LIVE["LiveRoom<br/>(observador WebRTC)"]
+  end
+  subgraph API["Next.js"]
+    AUTH["/api/admin/auth/*"]
+    ROUTES["/api/admin/* via adminRoute"]
+    JOIN["/api/rooms/:sala/join<br/>(observer só com sessão)"]
+  end
+  subgraph Store["RoomStore (memória ou MongoDB)"]
+    ROOMS[("rooms<br/>peers com ip e deviceId")]
+    CLOSED[("admin_closed<br/>salas fechadas")]
+    BANS[("admin_bans")]
+    TOMB[("admin_removed<br/>tombstones, TTL 5 min")]
+  end
+  P["Participantes<br/>(clientes comuns)"]
+
+  UI -->|"HTTP + cookie"| ROUTES
+  UI --> AUTH
+  LIVE -->|"entra como observador"| JOIN
+  ROUTES --> Store
+  JOIN --> Store
+  P -->|"join: ip dos cabeçalhos + deviceId"| JOIN
+  P <==>|"WebRTC: câmera, telas, voz"| LIVE
+  Store -->|"eventos admin: mensagem e comando"| P
+  Store -->|"410 gone com reason e detail"| P
+```
+
+### 17.4 Poderes e como são aplicados
+
+| Poder | Como funciona |
+|---|---|
+| **Ver salas** | `GET /api/admin/rooms`, atualizada a cada 5 s (pausa com a aba oculta). Mostra pessoas, observadores, criação, atividade e se está fechada. |
+| **Ver câmeras e telas** | O admin entra como **observador**: um par WebRTC que só recebe. Os participantes abrem uma conexão extra para ele. O observador não aparece na lista, em tiles nem toca som, e **enquanto ele está na sala os participantes veem um aviso** ("Um administrador pode estar vendo as câmeras e telas desta sala"). |
+| **Mensagem à sala ou a todas** | Evento `admin` (`from: 'admin'`) entregue a quem não é observador; o cliente mostra um banner. |
+| **Expulsar** | O servidor remove o peer e grava um **tombstone** (~2 min). No próximo contato o cliente recebe `410 gone` com `reason: 'kicked'` e o texto do admin (`detail`), mostra o aviso e **nunca reentra sozinho**. |
+| **Banir** | Cria bans de **IP** e de **dispositivo**, remove quem casa em qualquer sala e barra o `join` seguinte (`403 banned`). Há tela para remover bloqueios. |
+| **Fechar sala** | Remove todos (`reason: 'closed'`) e marca a sala **fechada**, de forma persistente (sem o TTL de 1 h) até o admin reabrir. `join` dá `403 room_closed`. |
+| **Parar transmissão** | Evento `admin` de comando (`screens`, `screen`+slot, `camera`, `mic`, `all`) ao cliente da pessoa, que obedece. |
+
+### 17.5 Limites que o admin precisa conhecer
+
+- **MAC address é impossível.** Navegadores não o expõem e o servidor só o enxerga em rede local. O bloqueio usa **IP + identificador do dispositivo** (UUID em `localStorage`).
+- **IP compartilhado bane inocentes** (mesma rede, NAT): no teste e2e todos os navegadores têm o mesmo IP, então banir um remove todos. IP dinâmico, VPN e limpar o armazenamento do navegador **contornam** o bloqueio.
+- **Parar a transmissão depende do cliente obedecer.** Um cliente adulterado pode ignorar o comando; a garantia real é **expulsar ou banir**, que é feito pelo servidor.
+- **Privacidade:** o IP e o identificador do dispositivo ficam guardados no servidor enquanto a pessoa está na sala (e nos bloqueios) e só aparecem na tela de admin. O aviso de monitoramento aos participantes é intencional.
+- **Custo:** cada participante envia um fluxo a mais ao observador enquanto a visão ao vivo está aberta.
