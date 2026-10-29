@@ -74,7 +74,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
 
   async function copyLink() {
     try {
-      await navigator.clipboard.writeText(`${location.origin}/?room=${encodeURIComponent(room)}`);
+      // utilizar rossik.dev.br como a base do link, para não depender de localhost ou do domínio da hospedagem
+      await navigator.clipboard.writeText(`https://rossik.dev.br/telax?room=${encodeURIComponent(room)}`);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -90,7 +91,10 @@ export function RoomView({ room, name }: { room: string; name: string }) {
             tela<span>X</span>
           </h1>
           <p role="alert">Sala cheia: &quot;{room}&quot; já tem 8 participantes.</p>
-          <Link className="primary link-btn" href={`/?room=${encodeURIComponent(room)}`}>
+          <p className="muted">
+            Você pode copiar o link da sala e compartilhar com outras pessoas.
+          </p>
+          <Link className="primary link-btn" href={`https://rossik.dev.br/telax?room=${encodeURIComponent(room)}`}>
             Voltar
           </Link>
         </div>
@@ -114,7 +118,7 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           <button className="primary" onClick={() => location.reload()}>
             Tentar novamente
           </button>
-          <Link className="ghost link-btn" href={`/?room=${encodeURIComponent(room)}`}>
+          <Link className="ghost link-btn" href={`https://rossik.dev.br/telax?room=${encodeURIComponent(room)}`}>
             Voltar
           </Link>
         </div>
