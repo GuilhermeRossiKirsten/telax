@@ -12,61 +12,114 @@ export const CONN_LABEL: Record<ConnState | 'self', string> = {
   failed: 'Falhou',
 };
 
+type Sound = { muted: boolean; volume: number };
+
 type Props = {
-  stream: MediaStream | null;
-  /** nome completo mostrado no tile e nos botões (ex.: "Tela de Ana") */
-  label: string;
+  /** nome da pessoa (sem "(você)"); `label` é o rótulo exibido */
   name: string;
+  label: string;
   isSelf?: boolean;
-  kind?: 'camera' | 'screen';
+  conn: ConnState | 'self';
+  camera: MediaStream | null;
+  screen: MediaStream | null;
   audioOn?: boolean;
   videoOn?: boolean;
-  conn: ConnState | 'self';
-  /** áudio silenciado só neste navegador (o som em si toca no RemoteAudio; aqui só os controles e o selo) */
-  muted?: boolean;
-  /** volume de 0 a 1 só neste navegador */
-  volume?: number;
-  /** é o tile em destaque */
+  /** a pessoa está compartilhando a tela */
+  sharing?: boolean;
+  /** o tile está mostrando a tela no lugar do avatar/câmera */
+  showScreen?: boolean;
   selected?: boolean;
-  onToggleMuted?(): void;
-  onVolume?(volume: number): void;
-  /** fechar = parar de visualizar (a faixa "Fechadas" permite abrir de novo) */
-  onClose?(): void;
+  /** voz e som da aba: silenciar e volume só neste navegador (o som toca no RemoteAudio) */
+  voice: Sound;
+  tab: Sound;
+  onToggleVoice?(): void;
+  onVoiceVolume?(v: number): void;
+  onToggleTab?(): void;
+  onTabVolume?(v: number): void;
+  onOpenScreen?(): void;
+  onCloseScreen?(): void;
+  /** esconder o tile (a faixa "Fechadas" traz de volta) */
+  onHide?(): void;
   onToggleSelect?(): void;
 };
 
+const hasVideoTrack = (s: MediaStream | null) => !!s && s.getVideoTracks().length > 0;
+
+function SoundControl(p: { muteLabel: string; unmuteLabel: string; volumeLabel: string; title: string; sound: Sound; onToggle?(): void; onVolume?(v: number): void; stop(fn?: () => void): (e: MouseEvent) => void }) {
+  const { sound } = p;
+  return (
+    <div className="tile-volume">
+      <button className="tile-btn" aria-label={sound.muted ? p.unmuteLabel : p.muteLabel} title={p.title} onClick={p.stop(p.onToggle)}>
+        <Icon name={sound.muted || sound.volume === 0 ? 'volumeOff' : 'volume'} size={16} />
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={Math.round((sound.muted ? 0 : sound.volume) * 100)}
+        aria-label={p.volumeLabel}
+        onChange={(e) => p.onVolume?.(Number(e.target.value) / 100)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Um tile por participante. Compartilhando, a tela substitui o avatar/câmera neste mesmo tile (mesmo <video>);
+ * se a câmera está ligada, ela passa a um quadro pequeno no canto.
+ */
 export function VideoTile({
-  stream,
-  label,
   name,
+  label,
   isSelf = false,
-  kind = 'camera',
+  conn,
+  camera,
+  screen,
   audioOn = true,
   videoOn = true,
-  conn,
-  muted = false,
-  volume = 1,
+  sharing = false,
+  showScreen = false,
   selected = false,
-  onToggleMuted,
-  onVolume,
-  onClose,
+  voice,
+  tab,
+  onToggleVoice,
+  onVoiceVolume,
+  onToggleTab,
+  onTabVolume,
+  onOpenScreen,
+  onCloseScreen,
+  onHide,
   onToggleSelect,
 }: Props) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const mainRef = useRef<HTMLVideoElement>(null);
+  const insetRef = useRef<HTMLVideoElement>(null);
+  const cameraLive = hasVideoTrack(camera) && videoOn;
+  const main = showScreen ? screen : camera;
+  const hasMain = showScreen ? hasVideoTrack(screen) : cameraLive;
+  const showInset = showScreen && cameraLive;
 
+  // um único <video> troca de fonte (câmera ↔ tela): não nasce outro elemento nem outro tile
   useEffect(() => {
-    const video = ref.current;
+    const video = mainRef.current;
     if (!video) return;
-    video.srcObject = stream;
-    if (stream) video.play().catch(() => {}); // mudo: o autoplay é sempre permitido
+    video.srcObject = main;
+    if (main) video.play().catch(() => {}); // mudo: o autoplay é sempre permitido
     return () => {
       video.srcObject = null;
     };
-  }, [stream]);
+  }, [main]);
 
-  const hasVideo = !!stream && stream.getVideoTracks().length > 0 && (kind === 'screen' || videoOn);
-  // a própria imagem não tem som para ajustar (evita eco); câmera e tela dos outros sim
-  const hasSound = !isSelf;
+  useEffect(() => {
+    const video = insetRef.current;
+    if (!video || !showInset) return;
+    video.srcObject = camera;
+    video.play().catch(() => {});
+    return () => {
+      video.srcObject = null;
+    };
+  }, [camera, showInset]);
+
   const stop = (fn?: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     fn?.();
@@ -74,47 +127,58 @@ export function VideoTile({
 
   return (
     <figure
-      className={`tile ${kind === 'screen' ? 'tile-screen' : ''}`}
+      className="tile"
       data-conn={conn}
-      data-testid={`tile-${kind}`}
+      data-testid="tile"
       data-selected={selected ? 'true' : undefined}
+      data-sharing={sharing ? 'true' : undefined}
+      data-showing={showScreen ? 'screen' : 'camera'}
       onClick={onToggleSelect}
     >
       <video
-        ref={ref}
+        ref={mainRef}
         autoPlay
         playsInline
         muted
-        className={isSelf && kind === 'camera' ? 'mirrored' : undefined}
-        style={{ visibility: hasVideo ? 'visible' : 'hidden' }}
+        className={isSelf && !showScreen ? 'mirrored' : undefined}
+        style={{ visibility: hasMain ? 'visible' : 'hidden' }}
       />
-      {!hasVideo && (
+      {showInset && <video ref={insetRef} className={`tile-inset ${isSelf ? 'mirrored' : ''}`} autoPlay playsInline muted />}
+      {!hasMain && !showScreen && (
         <div className="avatar" aria-hidden="true">
           {name.slice(0, 1).toUpperCase()}
         </div>
       )}
+      {sharing && !showScreen && !isSelf && (
+        <button className="tile-offer primary" aria-label={`Ver tela de ${name}`} onClick={stop(onOpenScreen)}>
+          <Icon name="screen" size={16} /> Ver tela
+        </button>
+      )}
       {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona */}
       <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
-        {hasSound && (
-          <div className="tile-volume">
-            <button
-              className="tile-btn"
-              aria-label={muted ? `Ativar som de ${label}` : `Silenciar ${label}`}
-              title={muted ? 'Voltar a ouvir (só para você)' : 'Silenciar (só para você)'}
-              onClick={stop(onToggleMuted)}
-            >
-              <Icon name={muted || volume === 0 ? 'volumeOff' : 'volume'} size={16} />
-            </button>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={Math.round((muted ? 0 : volume) * 100)}
-              aria-label={`Volume de ${label}`}
-              onChange={(e) => onVolume?.(Number(e.target.value) / 100)}
-            />
-          </div>
+        {!isSelf && (
+          <SoundControl
+            muteLabel={`Silenciar ${name}`}
+            unmuteLabel={`Ativar som de ${name}`}
+            volumeLabel={`Volume de ${name}`}
+            title={voice.muted ? 'Voltar a ouvir (só para você)' : 'Silenciar (só para você)'}
+            sound={voice}
+            onToggle={onToggleVoice}
+            onVolume={onVoiceVolume}
+            stop={stop}
+          />
+        )}
+        {!isSelf && showScreen && (
+          <SoundControl
+            muteLabel={`Silenciar som da aba de ${name}`}
+            unmuteLabel={`Ativar som da aba de ${name}`}
+            volumeLabel={`Volume da aba de ${name}`}
+            title={tab.muted ? 'Ouvir o som da aba (só para você)' : 'Silenciar o som da aba (só para você)'}
+            sound={tab}
+            onToggle={onToggleTab}
+            onVolume={onTabVolume}
+            stop={stop}
+          />
         )}
         <button
           className="tile-btn"
@@ -125,19 +189,30 @@ export function VideoTile({
         >
           <Icon name={selected ? 'minimize' : 'maximize'} size={16} />
         </button>
-        <button className="tile-btn" aria-label={`Fechar ${label}`} title="Parar de visualizar (só para você)" onClick={stop(onClose)}>
-          <Icon name="close" size={16} />
-        </button>
+        {showScreen && !isSelf ? (
+          <button className="tile-btn" aria-label={`Fechar tela de ${name}`} title="Parar de ver a tela (só para você)" onClick={stop(onCloseScreen)}>
+            <Icon name="close" size={16} />
+          </button>
+        ) : (
+          <button className="tile-btn" aria-label={`Fechar ${label}`} title="Parar de visualizar (só para você)" onClick={stop(onHide)}>
+            <Icon name="close" size={16} />
+          </button>
+        )}
       </div>
       <figcaption>
-        <span className="tile-name">{label}</span>
-        {kind === 'camera' && !audioOn && (
+        <span className="tile-name">{showScreen ? `Tela de ${name}` : label}</span>
+        {!audioOn && (
           <span className="tile-flag" title="Microfone desligado">
             <Icon name="micOff" size={14} />
           </span>
         )}
-        {muted && (
+        {voice.muted && !isSelf && (
           <span className="tile-flag tile-flag-local" title="Você silenciou esta pessoa">
+            <Icon name="volumeOff" size={14} />
+          </span>
+        )}
+        {showScreen && !isSelf && tab.muted && (
+          <span className="tile-flag tile-flag-local" title="O som da aba está silenciado">
             <Icon name="volumeOff" size={14} />
           </span>
         )}

@@ -5,8 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDevices } from '@/hooks/use-devices';
 import { useLocalMedia } from '@/hooks/use-local-media';
+import { useQuality } from '@/hooks/use-quality';
 import { useRoom } from '@/hooks/use-room';
 import { useViewState } from '@/hooks/use-view-state';
+import { toSendQuality } from '@/lib/quality';
 import { ControlBar } from './ControlBar';
 import { Icon } from './Icon';
 import { SettingsDialog } from './SettingsDialog';
@@ -22,7 +24,15 @@ export function RoomView({ room, name }: { room: string; name: string }) {
     () => ({ audio: local.micOn, video: local.camOn, sharing: local.sharing }),
     [local.micOn, local.camOn, local.sharing],
   );
-  const r = useRoom({ room, name, tracks: local.tracks, media });
+  const qualityApi = useQuality();
+  // a qualidade escolhida vale para a captura (resolução/fps) assim que muda, e para a câmera/tela que abrirem depois
+  const { setQuality: applyQuality } = local;
+  useEffect(() => {
+    applyQuality(qualityApi.quality);
+  }, [qualityApi.quality, applyQuality]);
+  // estável: o useRoom reaplica os limites de envio nas conexões só quando a escolha muda
+  const sendQuality = useMemo(() => toSendQuality(qualityApi.quality), [qualityApi.quality]);
+  const r = useRoom({ room, name, tracks: local.tracks, media, sendQuality });
   const screens = useViewState(r.participants);
   const devices = useDevices();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -192,7 +202,15 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         onRestart={restart}
         onLeave={() => router.push('/')}
       />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} devices={devices} />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        devices={devices}
+        quality={qualityApi}
+        inUse={local.inUse}
+        participants={r.participants.length}
+        sharing={local.sharing}
+      />
     </div>
   );
 }

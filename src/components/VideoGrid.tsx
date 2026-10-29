@@ -3,7 +3,17 @@
 import { useCallback, useState } from 'react';
 import type { Participant, RemoteStreams } from '@/hooks/use-room';
 import type { ViewApi } from '@/hooks/use-view-state';
-import { effectiveLayout, orderedTiles, primaryTile, tileLabel, visibleTiles, volumeOf, type Tile } from '@/lib/view-state';
+import {
+  audioKey,
+  effectiveLayout,
+  orderedTiles,
+  primaryTile,
+  showsScreen,
+  tileLabel,
+  visibleTiles,
+  volumeOf,
+  type Tile,
+} from '@/lib/view-state';
 import { Icon } from './Icon';
 import { RemoteAudio } from './RemoteAudio';
 import { VideoTile } from './VideoTile';
@@ -21,7 +31,7 @@ type Props = {
 
 export function VideoGrid({ participants, remoteStreams, localCamera, localScreen, tiles, view, dispatch, sinkId }: Props) {
   const people = new Map(participants.map((p) => [p.id, p]));
-  // tiles cujo som o navegador bloqueou (precisa de um gesto); `retry` refaz o play() dentro do clique
+  // fontes de som cujo play() o navegador bloqueou (precisa de um gesto); `retry` refaz o play() dentro do clique
   const [blocked, setBlocked] = useState<string[]>([]);
   const [retry, setRetry] = useState(0);
   const onBlocked = useCallback(
@@ -30,34 +40,44 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
     [],
   );
 
-  const streamOf = (t: Tile) =>
-    t.self ? (t.kind === 'screen' ? localScreen : localCamera) : (remoteStreams[t.peerId]?.[t.kind] ?? null);
+  const cameraOf = (t: Tile) => (t.self ? localCamera : (remoteStreams[t.peerId]?.camera ?? null));
+  const screenOf = (t: Tile) => (t.self ? localScreen : (remoteStreams[t.peerId]?.screen ?? null));
+
+  const sound = (key: string) => ({ muted: view.muted.includes(key), volume: volumeOf(view, key) });
+  // mexer no volume de uma fonte silenciada volta a ouvir
+  const setVolume = (key: string) => (volume: number) => {
+    dispatch({ type: 'volume', key, volume });
+    if (volume > 0 && view.muted.includes(key)) dispatch({ type: 'toggleMuted', key });
+  };
 
   const render = (t: Tile) => {
     const p = people.get(t.peerId);
     if (!p) return null;
-    const stream = streamOf(t);
+    const voiceKey = audioKey(t.id, 'camera');
+    const tabKey = audioKey(t.id, 'screen');
     return (
       <VideoTile
         key={t.id}
-        stream={stream}
-        label={tileLabel(t)}
         name={t.name}
-        kind={t.kind}
+        label={tileLabel(t)}
         isSelf={t.self}
+        conn={p.conn}
+        camera={cameraOf(t)}
+        screen={screenOf(t)}
         audioOn={p.audio}
         videoOn={p.video}
-        conn={p.conn}
-        muted={view.muted.includes(t.id)}
-        volume={volumeOf(view, t.id)}
+        sharing={t.sharing}
+        showScreen={showsScreen(t, view)}
         selected={view.selected === t.id}
-        onToggleMuted={() => dispatch({ type: 'toggleMuted', id: t.id })}
-        onVolume={(volume) => {
-          dispatch({ type: 'volume', id: t.id, volume });
-          // mexer no volume de quem está silenciado volta a ouvir
-          if (volume > 0 && view.muted.includes(t.id)) dispatch({ type: 'toggleMuted', id: t.id });
-        }}
-        onClose={() => dispatch({ type: 'toggleHidden', id: t.id })}
+        voice={sound(voiceKey)}
+        tab={sound(tabKey)}
+        onToggleVoice={() => dispatch({ type: 'toggleMuted', key: voiceKey })}
+        onVoiceVolume={setVolume(voiceKey)}
+        onToggleTab={() => dispatch({ type: 'toggleMuted', key: tabKey })}
+        onTabVolume={setVolume(tabKey)}
+        onOpenScreen={() => dispatch({ type: 'openScreen', id: t.id })}
+        onCloseScreen={() => dispatch({ type: 'closeScreen', id: t.id })}
+        onHide={() => dispatch({ type: 'toggleHidden', id: t.id })}
         onToggleSelect={() => dispatch({ type: 'select', id: t.id })}
       />
     );
@@ -66,23 +86,22 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
   const ordered = orderedTiles(tiles, view);
   const visible = visibleTiles(tiles, view);
   const hidden = ordered.filter((t) => view.hidden.includes(t.id));
-  // o que não está no palco continua montado, só fora da vista (o som não depende disso: ver RemoteAudio)
+  // o tile escondido continua montado, só fora da vista (o som não depende disso: ver RemoteAudio)
   const off = tiles.filter((t) => !visible.includes(t));
 
   const layout = effectiveLayout(visible, view);
   const main = layout === 'spotlight' ? primaryTile(visible, view) : undefined;
-  const stage =
-    main ? (
-      // selecionado (ou tela compartilhada) grande; todos os demais, participantes inclusive, na faixa embaixo
-      <div className="tiles" data-testid="tiles" data-layout="spotlight">
-        <div className="tiles-primary">{render(main)}</div>
-        <div className="tiles-rest">{visible.filter((t) => t !== main).map(render)}</div>
-      </div>
-    ) : (
-      <div className="tiles" data-testid="tiles" data-layout="grid" data-count={Math.min(visible.length, 9)}>
-        {visible.map(render)}
-      </div>
-    );
+  const stage = main ? (
+    // selecionado (ou tela aberta) grande; todos os demais, participantes inclusive, na faixa embaixo
+    <div className="tiles" data-testid="tiles" data-layout="spotlight">
+      <div className="tiles-primary">{render(main)}</div>
+      <div className="tiles-rest">{visible.filter((t) => t !== main).map(render)}</div>
+    </div>
+  ) : (
+    <div className="tiles" data-testid="tiles" data-layout="grid" data-count={Math.min(visible.length, 9)}>
+      {visible.map(render)}
+    </div>
+  );
 
   return (
     <div className="stage-tiles">
@@ -110,22 +129,42 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
       <div className="tiles-off" aria-hidden="true">
         {off.map(render)}
       </div>
-      {/* um elemento de áudio por tile remoto, num lugar fixo: layout, fechar e selecionar não o tocam */}
+      {/* um <audio> por fonte de som remota (voz e som da aba), num lugar fixo: layout, fechar e selecionar não o tocam */}
       <div className="audio-sink" aria-hidden="true">
         {tiles
           .filter((t) => !t.self)
-          .map((t) => (
-            <RemoteAudio
-              key={t.id}
-              id={t.id}
-              stream={streamOf(t)}
-              muted={view.muted.includes(t.id)}
-              volume={volumeOf(view, t.id)}
-              sinkId={sinkId}
-              retry={retry}
-              onBlocked={onBlocked}
-            />
-          ))}
+          .flatMap((t) => {
+            const voiceKey = audioKey(t.id, 'camera');
+            const tabKey = audioKey(t.id, 'screen');
+            const items = [
+              <RemoteAudio
+                key={voiceKey}
+                id={voiceKey}
+                stream={cameraOf(t)}
+                muted={view.muted.includes(voiceKey)}
+                volume={volumeOf(view, voiceKey)}
+                sinkId={sinkId}
+                retry={retry}
+                onBlocked={onBlocked}
+              />,
+            ];
+            if (t.sharing) {
+              items.push(
+                <RemoteAudio
+                  key={tabKey}
+                  id={tabKey}
+                  // o som da aba só toca enquanto a tela está aberta: fechar a tela para de ouvir também
+                  stream={showsScreen(t, view) ? screenOf(t) : null}
+                  muted={view.muted.includes(tabKey)}
+                  volume={volumeOf(view, tabKey)}
+                  sinkId={sinkId}
+                  retry={retry}
+                  onBlocked={onBlocked}
+                />,
+              );
+            }
+            return items;
+          })}
       </div>
     </div>
   );

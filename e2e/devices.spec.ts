@@ -53,7 +53,7 @@ async function pair(browser: Browser, label: string) {
   return { ana, beto };
 }
 
-const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile-camera"]', { hasText: name });
+const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile"]', { hasText: name });
 const micButton = (p: Page) => p.getByRole('button', { name: 'Microfone', exact: true });
 
 const dialog = (p: Page) => p.getByRole('dialog', { name: 'Configurações' });

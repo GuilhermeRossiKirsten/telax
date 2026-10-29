@@ -2,17 +2,24 @@
 
 import { useEffect, useId, useRef } from 'react';
 import type { useDevices } from '@/hooks/use-devices';
+import type { QualityApi } from '@/hooks/use-quality';
+import { TransmissionSettings } from './TransmissionSettings';
 import './settings-dialog.css';
 
 type Props = {
   open: boolean;
   onClose(): void;
   devices: ReturnType<typeof useDevices>;
+  quality: QualityApi;
+  /** o que a captura realmente entrega, por tipo */
+  inUse: { camera: string; screen: string };
+  participants: number;
+  sharing: boolean;
 };
 
 const FOCUSABLE = 'select:not(:disabled), button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function SettingsDialog({ open, onClose, devices }: Props) {
+export function SettingsDialog({ open, onClose, devices, quality, inUse, participants, sharing }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const micField = useRef<HTMLSelectElement>(null);
   const micId = useId();
@@ -75,7 +82,9 @@ export function SettingsDialog({ open, onClose, devices }: Props) {
     >
       <div ref={card} className="sd-card" role="dialog" aria-modal="true" aria-label="Configurações" tabIndex={-1}>
         <h2 className="sd-title">Configurações</h2>
-        <p className="sd-help">A troca vale na hora. Só você usa essa escolha: ela não muda nada para os outros participantes.</p>
+        <p className="sd-help">A troca vale na hora e fica lembrada neste navegador.</p>
+
+        <h3 className="sd-subtitle">Áudio</h3>
 
         <div className="sd-field">
           <label htmlFor={micId}>Microfone</label>
@@ -114,6 +123,8 @@ export function SettingsDialog({ open, onClose, devices }: Props) {
             <p className="sd-note">Este navegador não permite escolher a saída de áudio; o som sai pelo dispositivo padrão do sistema.</p>
           )}
         </div>
+
+        <TransmissionSettings api={quality} inUse={inUse} participants={participants} sharing={sharing} />
 
         <div className="sd-actions">
           <button type="button" className="primary" onClick={onClose}>

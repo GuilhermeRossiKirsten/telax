@@ -10,6 +10,12 @@ class FakeTransceiver {
     replaceTrack: vi.fn(async (t: MediaStreamTrack | null) => {
       this.sender.track = t;
     }),
+    /** Como o navegador: getParameters devolve uma cópia; só setParameters grava. */
+    params: { encodings: [] as Array<Record<string, unknown>> },
+    getParameters: vi.fn(() => JSON.parse(JSON.stringify(this.sender.params)) as typeof this.sender.params),
+    setParameters: vi.fn(async (p: typeof this.sender.params) => {
+      this.sender.params = JSON.parse(JSON.stringify(p));
+    }),
   };
   constructor(public kind: 'audio' | 'video') {}
 }
@@ -433,6 +439,171 @@ describe('áudio da aba compartilhada', () => {
     pcB.ontrack?.({ track: tab2, transceiver: pcB.transceivers[3] });
     expect(answerer.remote.at(-1)).toEqual(['a', { screenAudio: tab2 }]);
     answerer.manager.close();
+  });
+});
+
+describe('qualidade de envio', () => {
+  /** [áudio, câmera, tela, áudio da tela] do primeiro PC */
+  const senders = (i = 0) => FakePC.all[i].transceivers.map((t) => t.sender);
+  const enc = (i: number, pc = 0) => senders(pc)[i].params.encodings[0];
+
+  it('aplica a qualidade da câmera e da tela nos senders certos, sem tocar nos de áudio', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({
+      camera: { maxBitrate: 800_000, maxFramerate: 15 },
+      screen: { maxBitrate: 2_000_000, maxFramerate: 30 },
+    });
+    await flush();
+    expect(enc(1)).toEqual({ maxBitrate: 800_000, maxFramerate: 15 });
+    expect(enc(2)).toEqual({ maxBitrate: 2_000_000, maxFramerate: 30 });
+    expect(senders()[0].setParameters).not.toHaveBeenCalled();
+    expect(senders()[3].setParameters).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('aplica em todos os pares atuais', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    manager.addPeer('c');
+    await flush();
+    manager.setSendQuality({ camera: { maxFramerate: 20 } });
+    await flush();
+    expect(enc(1, 0)).toEqual({ maxFramerate: 20 });
+    expect(enc(1, 1)).toEqual({ maxFramerate: 20 });
+    manager.close();
+  });
+
+  it('campo ausente remove o limite (volta ao automático) e o outro continua', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({ camera: { maxBitrate: 500_000, maxFramerate: 10 }, screen: { maxFramerate: 5 } });
+    await flush();
+    manager.setSendQuality({ camera: { maxFramerate: 10 } });
+    await flush();
+    expect(enc(1)).toEqual({ maxFramerate: 10 });
+    expect('maxBitrate' in enc(1)).toBe(false);
+    expect(enc(2)).toEqual({}); // a tela perdeu os dois limites
+    manager.close();
+  });
+
+  it('valores inválidos viram "sem limite" e os válidos são arredondados', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({
+      camera: { maxBitrate: Number.NaN, maxFramerate: -5 },
+      screen: { maxBitrate: 800_000.7, maxFramerate: 14.6 },
+    });
+    await flush();
+    expect(enc(1)).toEqual({});
+    expect(enc(2)).toEqual({ maxBitrate: 800_001, maxFramerate: 15 });
+    manager.setSendQuality({ camera: { maxBitrate: 0, maxFramerate: Number.POSITIVE_INFINITY } });
+    await flush();
+    expect(enc(1)).toEqual({});
+    manager.close();
+  });
+
+  it('se o sender ainda não tem encodings, cria um', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    expect(senders()[1].params.encodings).toEqual([]);
+    manager.setSendQuality({ camera: { maxFramerate: 12 } });
+    await flush();
+    expect(senders()[1].params.encodings).toEqual([{ maxFramerate: 12 }]);
+    manager.close();
+  });
+
+  it('erro do navegador (rejeição ou exceção) não derruba nada nem vira rejeição não tratada', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    senders()[1].setParameters.mockRejectedValue(new Error('InvalidStateError'));
+    senders()[2].getParameters.mockImplementation(() => {
+      throw new Error('sem negociação');
+    });
+    expect(() => manager.setSendQuality({ camera: { maxFramerate: 10 }, screen: { maxFramerate: 10 } })).not.toThrow();
+    await flush();
+    // o vitest falha a suíte em rejeição não tratada: chegar aqui já prova que foi engolida
+    manager.close();
+  });
+
+  it('não reaplica o mesmo valor duas vezes ao mesmo sender', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({ camera: { maxFramerate: 10 } });
+    await flush();
+    manager.setSendQuality({ camera: { maxFramerate: 10 } });
+    await flush();
+    expect(senders()[1].setParameters).toHaveBeenCalledTimes(1);
+    manager.setSendQuality({ camera: { maxFramerate: 20 } });
+    await flush();
+    expect(senders()[1].setParameters).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('reaplica depois de um replaceTrack (os parâmetros podem ter sido resetados)', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({ camera: { maxBitrate: 900_000 } });
+    await flush();
+    senders()[1].params = { encodings: [{}] }; // o navegador resetou
+    manager.setLocalTracks({ audio: null, camera: track('video'), screen: null, screenAudio: null });
+    await flush();
+    expect(enc(1)).toEqual({ maxBitrate: 900_000 });
+    manager.close();
+  });
+
+  it('reaplica quando o par fica conectado', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({ camera: { maxBitrate: 900_000 } });
+    await flush();
+    senders()[1].params = { encodings: [{}] };
+    FakePC.all[0].setState('connected');
+    await flush();
+    expect(enc(1)).toEqual({ maxBitrate: 900_000 });
+    manager.close();
+  });
+
+  it('par criado depois já nasce com a qualidade (offerer)', async () => {
+    const { manager } = setup('a');
+    manager.setSendQuality({ screen: { maxFramerate: 8 } });
+    manager.addPeer('b');
+    await flush();
+    expect(enc(2)).toEqual({ maxFramerate: 8 });
+    manager.close();
+  });
+
+  it('quem responde aplica nos transceivers adotados da offer', async () => {
+    const { manager } = setup('b');
+    manager.setSendQuality({ camera: { maxBitrate: 400_000 }, screen: { maxFramerate: 6 } });
+    manager.addPeer('a');
+    await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
+    await flush();
+    expect(enc(1)).toEqual({ maxBitrate: 400_000 });
+    expect(enc(2)).toEqual({ maxFramerate: 6 });
+    expect(senders()[0].setParameters).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('um PC recriado (reinício global) recebe a qualidade de novo', async () => {
+    const { manager } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    manager.setSendQuality({ camera: { maxFramerate: 10 } });
+    await flush();
+    manager.restartAll(1);
+    await flush();
+    expect(FakePC.all).toHaveLength(2);
+    expect(enc(1, 1)).toEqual({ maxFramerate: 10 });
+    manager.close();
   });
 });
 

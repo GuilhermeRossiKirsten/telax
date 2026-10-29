@@ -72,7 +72,7 @@ async function goLive(...users: User[]) {
 }
 
 const participants = (p: Page) => p.getByTestId('participants').locator('li');
-const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile-camera"]', { hasText: name });
+const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile"]', { hasText: name });
 
 async function expectConnected(p: Page, other: string) {
   await expect(participants(p).filter({ hasText: other }).locator('.badge')).toHaveText('Conectado');
@@ -80,7 +80,7 @@ async function expectConnected(p: Page, other: string) {
 
 /** O vídeo remoto tem frames reais: o relógio avança E o contador de quadros decodificados cresce. */
 async function expectVideoPlaying(tile: ReturnType<Page['locator']>) {
-  const video = tile.locator('video');
+  const video = tile.locator('video:not(.tile-inset)'); // o principal: o inset é a câmera pequena sobre a tela
   const frames = () => video.evaluate((v: HTMLVideoElement) => v.getVideoPlaybackQuality().totalVideoFrames);
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
   const t1 = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
@@ -182,23 +182,104 @@ test('microfone e câmera refletem o estado nos outros participantes', async ({ 
   await beto.ctx.close();
 });
 
-test('compartilhamento de tela aparece para o outro participante', async ({ browser }) => {
+const tilesOf = (p: Page) => p.locator('figure[data-testid="tile"]');
+const shareButton = (p: Page) => p.getByRole('button', { name: 'Tela', exact: true });
+
+test('compartilhar tela: a tela entra no MESMO tile da pessoa, no lugar do avatar (um tile só)', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'tela');
   await expectConnected(beto.page, 'Ana');
-  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
-  const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
+  await shareButton(ana.page).click();
+  const tile = tileOf(beto.page, 'Ana');
 
-  // a tela de outra pessoa chega oculta: Beto escolhe mostrar
-  const shelf = beto.page.getByRole('region', { name: 'Telas fechadas' });
-  await expect(screen).toBeHidden();
-  await shelf.getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
-  await expect(screen).toBeVisible();
-  await expect(shelf.getByRole('button', { name: 'Mostrar Tela de Ana' })).toHaveCount(0);
+  // a tela de outra pessoa chega fechada: o tile continua mostrando o avatar e oferece "Ver tela"
+  await expect(tile).toHaveAttribute('data-sharing', 'true');
+  await expect(tile).toHaveAttribute('data-showing', 'camera');
+  await expect(tile.locator('.avatar')).toBeVisible();
+  const open = tile.getByRole('button', { name: 'Ver tela de Ana' });
+  await expect(open).toBeVisible();
+  await expect(tilesOf(beto.page)).toHaveCount(2); // nenhum tile novo só para a tela
+
+  await open.click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+  await expect(tile.locator('.avatar')).toBeHidden(); // a tela ocupa o lugar do ícone
+  await expect(tile.getByRole('button', { name: 'Ver tela de Ana' })).toHaveCount(0);
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+  await expect(tileOf(beto.page, 'Ana')).toHaveCount(1); // só UM tile da Ana
   await expect(beto.page.getByTestId('tiles')).toHaveAttribute('data-layout', 'spotlight');
-  await expect.poll(() => screen.locator('video').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
+  await expect.poll(() => tile.locator('video:not(.tile-inset)').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
 
-  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
-  await expect(beto.page.locator('figure[data-testid="tile-screen"]')).toHaveCount(0);
+  await shareButton(ana.page).click();
+  await expect(tile).not.toHaveAttribute('data-sharing', 'true');
+  await expect(tile).toHaveAttribute('data-showing', 'camera');
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+  await expect(beto.page.getByTestId('tiles')).toHaveAttribute('data-layout', 'grid');
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('quem compartilha vê a própria tela no próprio tile, sem avatar nem "Ver tela"; ainda 2 tiles nas duas páginas', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'propria');
+  await expectConnected(ana.page, 'Beto');
+  await shareButton(ana.page).click();
+  const mine = tileOf(ana.page, 'Ana');
+
+  await expect(mine).toHaveAttribute('data-showing', 'screen');
+  await expect(mine.locator('.avatar')).toBeHidden();
+  await expect(mine.getByRole('button', { name: /Ver tela/ })).toHaveCount(0);
+  await expect.poll(() => mine.locator('video:not(.tile-inset)').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
+  await expect(ana.page.getByTestId('tiles')).toHaveAttribute('data-layout', 'spotlight'); // a própria tela também destaca
+  // um tile por participante, dos dois lados, mesmo durante o compartilhamento
+  await expect(tilesOf(ana.page)).toHaveCount(2);
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+
+  await shareButton(ana.page).click();
+  await expect(mine).toHaveAttribute('data-showing', 'camera');
+  await expect(tilesOf(ana.page)).toHaveCount(2);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('tela aberta com a câmera ligada: a câmera vira um quadro pequeno no mesmo tile; desligada, não sobra nem avatar', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'inset');
+  await expectConnected(beto.page, 'Ana');
+  await ana.page.getByRole('button', { name: 'Câmera', exact: true }).click();
+  await expect(ana.page.getByRole('button', { name: 'Câmera', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await shareButton(ana.page).click();
+  const tile = tileOf(beto.page, 'Ana');
+  await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+
+  await expect(tile.locator('video.tile-inset')).toBeVisible();
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+  await expect.poll(() => tile.locator('video:not(.tile-inset)').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
+
+  await ana.page.getByRole('button', { name: 'Câmera', exact: true }).click(); // desliga
+  await expect(tile.locator('video.tile-inset')).toHaveCount(0);
+  await expect(tile.locator('.avatar')).toBeHidden();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('"Fechar tela" volta à câmera/avatar no mesmo tile, mantém o tile e para o som da aba', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'fechartela');
+  await expectConnected(beto.page, 'Ana');
+  await shareButton(ana.page).click();
+  const tile = tileOf(beto.page, 'Ana');
+  await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+  const sound = beto.page.locator('[data-testid^="audio-screen:"]');
+  await expect(sound).toHaveCount(1);
+
+  await tile.hover();
+  await tile.getByRole('button', { name: 'Fechar tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'camera');
+  await expect(tile).toHaveAttribute('data-sharing', 'true'); // ela segue compartilhando; só deixei de ver
+  await expect(tile.locator('.avatar')).toBeVisible();
+  await expect(tile.getByRole('button', { name: 'Ver tela de Ana' })).toBeVisible();
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.srcObject === null)).toBe(true); // o som da aba parou
+  await expect(beto.page.getByRole('region', { name: 'Telas fechadas' })).toHaveCount(0); // fechar a tela não esconde o tile
   await ana.ctx.close();
   await beto.ctx.close();
 });
@@ -237,20 +318,21 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   await enter(beto, room, 'Beto');
   await expectConnected(beto.page, 'Ana');
 
-  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
-  await expect(ana.page.getByRole('button', { name: 'Tela', exact: true })).toHaveAttribute('title', /som da aba está sendo enviado/);
+  await shareButton(ana.page).click();
+  await expect(shareButton(ana.page)).toHaveAttribute('title', /som da aba está sendo enviado/);
 
-  const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
-  await beto.page.getByRole('region', { name: 'Telas fechadas' }).getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
-  await expect(screen).toBeVisible();
-  // o som da tela toca num <audio> próprio (o do tile da câmera é outro): começa silenciado
+  const tile = tileOf(beto.page, 'Ana');
+  await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+  // o som da tela toca num <audio> próprio (o da voz é outro): começa silenciado
   const sound = audioOf(beto.page, 'screen');
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(true);
-  await expect(screen.locator('.tile-flag-local')).toBeVisible();
-  // e esse <audio> não é o do microfone da Ana: lá há só o microfone
+  // e esse <audio> não é o do microfone da Ana: a voz tem o seu
   await expect(audioOf(beto.page, 'camera')).toHaveCount(1);
+  await tile.hover();
+  await expect(tile.getByRole('button', { name: 'Ativar som da aba de Ana' })).toBeVisible();
 
-  await screen.getByRole('button', { name: 'Ativar som de Tela de Ana' }).click();
+  await tile.getByRole('button', { name: 'Ativar som da aba de Ana' }).click();
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.muted && !a.paused)).toBe(true);
 
   // o som que chega é o tom de verdade, não silêncio
@@ -272,8 +354,9 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   });
   expect(peak).toBeGreaterThan(0.02);
 
-  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
-  await expect(beto.page.locator('figure[data-testid="tile-screen"]')).toHaveCount(0);
+  await shareButton(ana.page).click();
+  await expect(tile).not.toHaveAttribute('data-sharing', 'true');
+  await expect(sound).toHaveCount(0); // sem compartilhamento não há <audio> de tela
   expect(ana.errors).toEqual([]);
   expect(beto.errors).toEqual([]);
   await ana.ctx.close();
@@ -281,7 +364,7 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
 });
 
 const playing = (tile: ReturnType<Page['locator']>) =>
-  tile.locator('video').evaluate((v: HTMLVideoElement) => !v.paused && v.readyState >= 2);
+  tile.locator('video:not(.tile-inset)').evaluate((v: HTMLVideoElement) => !v.paused && v.readyState >= 2);
 
 /** O som de cada tile remoto mora num <audio> fixo; testes abaixo o marcam para provar que nada o recria. */
 const audioOf = (p: Page, kind: 'camera' | 'screen') => p.locator(`[data-testid^="audio-${kind}:"]`);
@@ -357,8 +440,8 @@ test('clicar numa tela a seleciona: fica grande e os outros ficam embaixo; Esc s
   await expect(tile).toHaveAttribute('data-selected', 'true');
   await expect(tiles).toHaveAttribute('data-layout', 'spotlight');
   // o selecionado é o grande e a própria câmera continua visível, na faixa de baixo
-  await expect(ana.page.locator('.tiles-primary').locator('figure[data-testid="tile-camera"]', { hasText: 'Beto' })).toBeVisible();
-  await expect(ana.page.locator('.tiles-rest').locator('figure[data-testid="tile-camera"]', { hasText: 'Ana' })).toBeVisible();
+  await expect(ana.page.locator('.tiles-primary').locator('figure[data-testid="tile"]', { hasText: 'Beto' })).toBeVisible();
+  await expect(ana.page.locator('.tiles-rest').locator('figure[data-testid="tile"]', { hasText: 'Ana' })).toBeVisible();
   await expect.poll(() => playing(tile)).toBe(true);
   expect(await sameAudioStillPlaying(sound)).toBe(true);
 

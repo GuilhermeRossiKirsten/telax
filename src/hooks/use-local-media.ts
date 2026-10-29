@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { DEFAULT_QUALITY, contentHintFor, describeActual, toVideoConstraints, type QualitySettings } from '@/lib/quality';
 import { captureScreen } from '@/lib/screen-capture';
 import { describeMediaError } from './media-errors';
 
@@ -45,6 +46,32 @@ export function useLocalMedia() {
   const micPendingRef = useRef<string | null>(null);
   /** a escolha mais recente do usuário: uma captura de outro dispositivo que termine depois é descartada */
   const micWantedRef = useRef<string | null>(null);
+  /** qualidade escolhida nas Configurações; vale para a câmera ao abrir e para a tela ao compartilhar */
+  const qualityRef = useRef<QualitySettings>(DEFAULT_QUALITY);
+  /** o que a captura realmente entrega (pode diferir do pedido: o dispositivo manda) */
+  const [inUse, setInUse] = useState({ camera: '', screen: '' });
+
+  const applyQuality = useCallback(async (kind: 'camera' | 'screen', track?: MediaStreamTrack) => {
+    if (!track || track.readyState !== 'live') return;
+    const q = qualityRef.current;
+    try {
+      await track.applyConstraints(toVideoConstraints(kind, q));
+    } catch {
+      /* o dispositivo não aceita essa combinação: segue com o que já entrega */
+    }
+    if (kind === 'screen') (track as MediaStreamTrack & { contentHint?: string }).contentHint = contentHintFor(q.screen.priority);
+    if (aliveRef.current) setInUse((prev) => ({ ...prev, [kind]: describeActual(track.getSettings()) }));
+  }, []);
+
+  /** Aplica a qualidade escolhida à câmera e à tela que já estão abertas (e guarda para as próximas). */
+  const setQuality = useCallback(
+    (q: QualitySettings) => {
+      qualityRef.current = q;
+      void applyQuality('camera', cameraRef.current?.getVideoTracks()[0]);
+      void applyQuality('screen', screenRef.current?.getVideoTracks()[0]);
+    },
+    [applyQuality],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -66,6 +93,7 @@ export function useLocalMedia() {
           cameraRef.current = stream;
           micIsDefaultRef.current = stream.getAudioTracks().length > 0;
           setCamera(stream);
+          void applyQuality('camera', stream.getVideoTracks()[0]);
           setMicOn(false);
           setCamOn(false);
           if (constraints !== ATTEMPTS[0]) {
@@ -92,7 +120,7 @@ export function useLocalMedia() {
       stopStream(screenRef.current);
       screenRef.current = null;
     };
-  }, []);
+  }, [applyQuality]);
 
   /** Solta câmera, microfone e tela (luz da câmera apagada) quando não há chamada, ex.: sala cheia. */
   const stopAll = useCallback(() => {
@@ -188,6 +216,7 @@ export function useLocalMedia() {
     stopStream(screenRef.current);
     screenRef.current = null;
     setScreen(null);
+    setInUse((prev) => ({ ...prev, screen: '' }));
   }, []);
 
   const toggleScreen = useCallback(async () => {
@@ -200,11 +229,12 @@ export function useLocalMedia() {
       }, { once: true });
       screenRef.current = stream;
       setScreen(stream);
+      void applyQuality('screen', stream.getVideoTracks()[0]);
     } catch (e) {
       if (e instanceof Error && e.name === 'NotAllowedError') return; // usuário cancelou o seletor
       setError('Não foi possível compartilhar a tela neste navegador.');
     }
-  }, [stopScreen]);
+  }, [stopScreen, applyQuality]);
 
   const tracks = useMemo<LocalTracks>(
     () => ({
@@ -229,6 +259,8 @@ export function useLocalMedia() {
     error,
     stopAll,
     selectMic,
+    setQuality,
+    inUse,
     toggleMic,
     toggleCam,
     toggleScreen,

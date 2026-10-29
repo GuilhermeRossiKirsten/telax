@@ -18,6 +18,26 @@ const NEGOTIATE_TIMEOUT_MS = 8000;
 const SESSION_TIMEOUT_MS = 20_000;
 const noop = () => {};
 
+/** Limites do que ESTE navegador envia (bits/s e quadros/s). Campo ausente ou inválido = automático. */
+export type SendQualityEntry = { maxBitrate?: number; maxFramerate?: number };
+export type SendQuality = { camera?: SendQualityEntry; screen?: SendQualityEntry };
+type QualitySlot = 'camera' | 'screen';
+const QUALITY_SLOTS: QualitySlot[] = ['camera', 'screen'];
+
+const positiveInt = (n: unknown): number | undefined => {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return undefined;
+  const r = Math.round(n);
+  return r > 0 ? r : undefined;
+};
+const normalizeQuality = (q?: SendQualityEntry): SendQualityEntry => {
+  const out: SendQualityEntry = {};
+  const maxBitrate = positiveInt(q?.maxBitrate);
+  const maxFramerate = positiveInt(q?.maxFramerate);
+  if (maxBitrate !== undefined) out.maxBitrate = maxBitrate;
+  if (maxFramerate !== undefined) out.maxFramerate = maxFramerate;
+  return out;
+};
+
 export type PeerManagerOpts = {
   selfId: string;
   iceServers: RTCIceServer[];
@@ -60,6 +80,10 @@ export class PeerManager {
   private queue = new RestartQueue(2);
   private local: LocalTracks = { audio: null, camera: null, screen: null, screenAudio: null };
   private closed = false;
+  /** Último limite pedido; null enquanto ninguém pediu (aí não se mexe nos parâmetros dos senders). */
+  private quality: SendQuality | null = null;
+  /** O que já foi aplicado em cada sender (após recriar o PC o sender é outro e recebe de novo). */
+  private applied = new WeakMap<object, string>();
 
   constructor(private opts: PeerManagerOpts) {
     this.gen = opts.gen;
@@ -68,6 +92,14 @@ export class PeerManager {
   setLocalTracks(tracks: LocalTracks): void {
     this.local = { ...tracks };
     for (const e of this.peers.values()) this.applyLocalTracks(e);
+  }
+
+  /** Limita bitrate/fps da câmera e da tela enviadas a todos os pares (RTCRtpSender.setParameters). */
+  setSendQuality(q: SendQuality): void {
+    this.quality = { camera: q.camera && { ...q.camera }, screen: q.screen && { ...q.screen } };
+    for (const e of this.peers.values()) {
+      for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, slot, false);
+    }
   }
 
   addPeer(peerId: string): void {
@@ -237,6 +269,7 @@ export class PeerManager {
         e.everConnected = true;
         e.attempts = 0;
         this.report(e, 'connected');
+        for (const slot of QUALITY_SLOTS) this.applyQuality(e.tx[slot]?.sender, slot, true);
         e.settle?.();
         break;
       case 'disconnected':
@@ -361,7 +394,40 @@ export class PeerManager {
   // --- mídia e canal -----------------------------------------------------
 
   private applyLocalTracks(e: Entry): void {
-    for (const slot of SLOTS) e.tx[slot]?.sender.replaceTrack(this.local[slot]).catch(noop);
+    for (const slot of SLOTS) {
+      const sender = e.tx[slot]?.sender;
+      if (!sender) continue;
+      // depois do replaceTrack os parâmetros do sender podem ter sido resetados (ou ainda nem existir): reaplica
+      sender
+        .replaceTrack(this.local[slot])
+        .catch(noop)
+        .then(() => {
+          if (slot === 'camera' || slot === 'screen') this.applyQuality(sender, slot, true);
+        });
+    }
+  }
+
+  /** Aplica o limite guardado a um sender. Nunca lança: o navegador pode recusar (sem negociação, PC fechado). */
+  private applyQuality(sender: RTCRtpSender | undefined, slot: QualitySlot, force: boolean): void {
+    if (!sender || !this.quality || this.closed) return;
+    const wanted = normalizeQuality(this.quality[slot]);
+    const key = JSON.stringify(wanted);
+    if (!force && this.applied.get(sender) === key) return;
+    this.applied.set(sender, key);
+    (async () => {
+      const params = sender.getParameters();
+      if (!params.encodings?.length) params.encodings = [{}];
+      for (const enc of params.encodings) {
+        if (wanted.maxBitrate !== undefined) enc.maxBitrate = wanted.maxBitrate;
+        else delete enc.maxBitrate;
+        if (wanted.maxFramerate !== undefined) enc.maxFramerate = wanted.maxFramerate;
+        else delete enc.maxFramerate;
+      }
+      await sender.setParameters(params);
+    })().catch(() => {
+      // não aplicou: libera para uma próxima tentativa (replaceTrack, conexão ou novo pedido)
+      if (this.applied.get(sender) === key) this.applied.delete(sender);
+    });
   }
 
   /** Quem responde: os transceivers criados pela offer (ordem das m-lines) viram sendrecv com nossos tracks. */

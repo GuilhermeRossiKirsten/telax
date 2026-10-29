@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PeerManager, type ConnState } from '@/lib/peer-manager';
+import { PeerManager, type ConnState, type SendQuality } from '@/lib/peer-manager';
 import { createSignalingClient, type SignalingStatus } from '@/lib/signaling-client';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, SignalData } from '@/lib/types';
 import type { LocalTracks } from './use-local-media';
@@ -41,8 +41,15 @@ function syncStream(stream: MediaStream, wanted: Array<MediaStreamTrack | undefi
   for (const t of keep) if (!stream.getTracks().includes(t)) stream.addTrack(t);
 }
 
-export function useRoom(args: { room: string; name: string; tracks: LocalTracks; media: PeerMediaState }) {
-  const { room, name, tracks, media } = args;
+/** `sendQuality` (opcional, memoize-o): limita bitrate/fps do que este navegador envia; sem ele, nada muda. */
+export function useRoom(args: {
+  room: string;
+  name: string;
+  tracks: LocalTracks;
+  media: PeerMediaState;
+  sendQuality?: SendQuality;
+}) {
+  const { room, name, tracks, media, sendQuality } = args;
   const [status, setStatus] = useState<SignalingStatus>('connecting');
   const [selfId, setSelfId] = useState<string | null>(null);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
@@ -56,6 +63,7 @@ export function useRoom(args: { room: string; name: string; tracks: LocalTracks;
   const managerRef = useRef<PeerManager | null>(null);
   const tracksRef = useRef(tracks);
   const mediaRef = useRef(media);
+  const qualityRef = useRef(sendQuality);
   const selfRef = useRef<string | null>(null);
   const streamRefs = useRef(new Map<string, RemoteStreams>());
   const urlsRef = useRef(new Set<string>());
@@ -64,6 +72,11 @@ export function useRoom(args: { room: string; name: string; tracks: LocalTracks;
     tracksRef.current = tracks;
     managerRef.current?.setLocalTracks(tracks);
   }, [tracks]);
+
+  useEffect(() => {
+    qualityRef.current = sendQuality;
+    if (sendQuality) managerRef.current?.setSendQuality(sendQuality);
+  }, [sendQuality]);
 
   useEffect(() => {
     mediaRef.current = media;
@@ -141,6 +154,7 @@ export function useRoom(args: { room: string; name: string; tracks: LocalTracks;
           },
         });
         manager.setLocalTracks(tracksRef.current);
+        if (qualityRef.current) manager.setSendQuality(qualityRef.current);
         managerRef.current = manager;
         for (const p of result.participants) if (p.id !== result.peerId) manager.addPeer(p.id);
         // o servidor assume mic/câmera ligados ao entrar; corrige já com o estado real

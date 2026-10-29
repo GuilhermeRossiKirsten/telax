@@ -20,7 +20,7 @@ const uniqueRoom = (label: string) => `mesh-${label}-${Date.now()}-${++seq}`;
 const opened: User[] = [];
 
 const participants = (p: Page) => p.getByTestId('participants').locator('li');
-const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile-camera"]', { hasText: name });
+const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile"]', { hasText: name });
 const showParticipants = (p: Page) => p.getByRole('tab', { name: /Participantes/ }).click();
 const showChat = (p: Page) => p.getByRole('tab', { name: /Chat/ }).click();
 const pcCount = (p: Page) => p.evaluate(() => (window as unknown as { __pcs: unknown[] }).__pcs.length);
@@ -68,7 +68,7 @@ async function expectConnected(p: Page, other: string) {
 
 /** O vídeo remoto tem frames reais e o relógio de reprodução avança. */
 async function expectVideoPlaying(tile: Locator) {
-  const video = tile.locator('video');
+  const video = tile.locator('video:not(.tile-inset)');
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
   const t1 = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(t1);

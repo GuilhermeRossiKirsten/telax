@@ -45,3 +45,25 @@ A aba **Telas** do painel foi **retirada**, junto com o seletor de layout/coluna
 - **Overlay sobre cada tela** (ao passar o mouse/foco; sempre visível em toque): **volume** (0–100), **silenciar**, **destacar/soltar** e **fechar**. Fechar = parar de visualizar (a faixa "Fechadas" traz de volta); o som segue como estava, a menos que também silenciado. Mexer no volume de quem está silenciado volta a ouvir.
 - O volume é por tile, só no navegador de quem ajusta, aplicado no `<audio>` fixo de cada tile (`RemoteAudio`). As seções acima que falam de aba Telas, layout, colunas e reordenação ficam substituídas por esta.
 - Layout e colunas deixam de existir como preferência; nada é salvo em localStorage para as telas (só os dispositivos de áudio).
+
+## Configurações de transmissão (pedido posterior)
+
+Seção **Transmissão** na janela de Configurações, separada para **câmera** e **tela**, valendo só para o que **eu envio**:
+
+- **Câmera:** resolução (Automática, 360p, 480p, 720p, 1080p), FPS (Automático, 15, 24, 30), taxa de bits máxima (Automática, 300 kbps, 800 kbps, 1,5 Mbps, 3 Mbps).
+- **Tela:** resolução (Automática/nativa, 720p, 1080p), FPS (Automático, 5, 15, 30, 60), taxa de bits máxima (Automática, 1, 2,5, 5, 8 Mbps), prioridade (Equilibrada, Movimento fluido = `contentHint 'motion'`, Nitidez do texto = `'detail'`).
+- Como se aplica (sem renegociar): resolução e FPS por `track.applyConstraints` (câmera ao vivo; tela no início do compartilhamento e a cada mudança); `contentHint` na faixa da tela; taxa de bits e FPS máximos por `RTCRtpSender.setParameters` em **todas** as conexões (e nas novas), reaplicados depois de `replaceTrack` e quando o par conecta.
+- Malha completa: cada par recebe um fluxo próprio, então o envio total é a taxa × (participantes − 1). A janela mostra essa estimativa.
+- Mudar alguma configuração vale na hora e é lembrada no navegador (`telax:quality`, validada ao ler; valor desconhecido volta ao automático). "Restaurar automático" zera tudo.
+- Se o navegador não aceitar uma restrição (câmera sem aquele modo, por exemplo), a captura segue como estava e a janela diz o que ficou valendo de verdade ("em uso: 1280×720 a 30 fps").
+- Fora do escopo: escolher o codec, simulcast/SVC, adaptação automática por perda de pacotes além do que o navegador já faz.
+
+## Tile único por participante (pedido posterior)
+
+Substitui, no que diz respeito a "tela compartilhada como tile separado", as seções anteriores:
+
+- **Um tile por participante** (id = peerId). Compartilhando, a **tela ocupa o lugar do avatar/câmera no mesmo tile** (o mesmo `<video>` troca de fonte); se a câmera está ligada, vira um quadro pequeno (`.tile-inset`) no canto. Quem compartilha vê a própria tela direto no próprio tile.
+- Para os outros, a tela **começa fechada** (tile com avatar/câmera + botão "Ver tela") e o **som da aba começa mutado**; abrir não ativa o som. Fechar a tela (overlay) volta ao avatar/câmera **e para o som da aba**. Se a pessoa para e volta a compartilhar, volta fechada e mutada.
+- Estado (`view-state.ts`): `screens` (telas abertas), `sharing` (quem compartilha agora), `muted`/`volume` por chave de áudio `camera:<peer>` (voz) e `screen:<peer>` (som da aba, só existe enquanto a pessoa compartilha). `hidden` passa a ser só do tile inteiro (faixa "Fechadas").
+- Layout: destaque quando há tile selecionado ou algum tile visível mostrando tela; senão grade.
+- Atributos de teste: `figure[data-testid="tile"]` com `data-showing="camera|screen"`, `data-sharing`, `data-selected`; `<audio data-testid="audio-camera:<peer>">` e `audio-screen:<peer>`.

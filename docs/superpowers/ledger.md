@@ -79,3 +79,13 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - O volume vive no `<audio>` fixo (`RemoteAudio`), então seleção/fechar não recriam o som (testes marcam o elemento).
 - Tropeço meu: ao apagar CSS morto, meu corte removeu o bloco principal do `.tile` (position:relative etc.); o overlay passou a cobrir os botões da faixa Fechadas e 4 e2e falharam por "intercepts pointer events". Restaurado; e2e 23/23 depois. Lição: conferir o diff do CSS após cortes por marcador.
 - Verificação: tsc limpo; vitest 212 passed / 4 skipped; e2e 23/23; mesh 5/5; prints conferidos (aba some, seleção, overlay).
+
+## Configurações de transmissão + tile único
+
+- Transmissão (qualidade/fps/bitrate/prioridade): TDD em `quality.ts` (17 testes, vistos falhar antes); fork cuidou do `PeerManager.setSendQuality` (12 testes novos) enquanto eu fiz presets, hook, diálogo e e2e. Os e2e leem `getParameters()` do `RTCRtpSender` REAL (limites aplicados na câmera e na tela, reaplicados em conexão nova após reload). Mutação: sem passar `sendQuality` ao `useRoom`, 3 desses testes quebram.
+- Achado do e2e: a câmera falsa do Chromium não passa de 1280 de largura; o teste agora compara 360p < 720p e que pedir 1080p não quebra (a janela mostra o que ficou em uso).
+- Tile único (pedido do usuário): modelo reescrito (`view-state.ts`, testes novos vistos falhar antes: 23). Fork atualizou os e2e a partir de um contrato de interface escrito por mim, em paralelo com minha reescrita de `VideoTile`/`VideoGrid`; integração: 31/31 e2e, 5/5 mesh, 246 unit.
+- Ruling: com a tela aberta e a câmera ligada, a câmera vira inset no mesmo tile (o pedido falava do ícone; a câmera ligada não pode simplesmente sumir). Custo se errado: remover o inset.
+- Ruling: fechar a tela também para o som da aba (stream do `<audio>` vira null); o pedido era "fechar a transmissão para parar de visualizar".
+- Ruling: "Fechar" no tile que mostra a tela de outra pessoa fecha a tela; em qualquer outro caso esconde o tile. O próprio tile compartilhando só pode ser escondido.
+- Pendentes não executados (só pelo relato do revisor, nunca direto do usuário): prévia de arquivos no chat; commit e push.
