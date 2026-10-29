@@ -187,11 +187,204 @@ test('compartilhamento de tela aparece para o outro participante', async ({ brow
   await expectConnected(beto.page, 'Ana');
   await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
   const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
+
+  // a tela de outra pessoa chega oculta: Beto escolhe mostrar
+  const shelf = beto.page.getByRole('region', { name: 'Telas ocultas' });
+  await expect(screen).toBeHidden();
+  await shelf.getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
   await expect(screen).toBeVisible();
+  await expect(shelf.getByRole('button', { name: 'Mostrar Tela de Ana' })).toHaveCount(0);
+  await expect(beto.page.getByTestId('tiles')).toHaveAttribute('data-layout', 'spotlight');
   await expect.poll(() => screen.locator('video').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
 
   await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
   await expect(beto.page.locator('figure[data-testid="tile-screen"]')).toHaveCount(0);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+/** Só para teste: o "compartilhar tela" entrega um vídeo animado e um tom de 440 Hz, como uma aba tocando som. */
+const FAKE_TAB_WITH_AUDIO = () => {
+  // como o navegador de verdade: só entrega áudio se o app o pediu
+  navigator.mediaDevices.getDisplayMedia = async (options) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 360;
+    const g = canvas.getContext('2d')!;
+    let n = 0;
+    setInterval(() => {
+      g.fillStyle = `hsl(${(n += 7) % 360} 80% 50%)`;
+      g.fillRect(0, 0, 640, 360);
+    }, 50);
+    const ac = new AudioContext();
+    void ac.resume();
+    const osc = ac.createOscillator();
+    osc.frequency.value = 440;
+    const dest = ac.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    const audio = options?.audio ? dest.stream.getAudioTracks() : [];
+    return new MediaStream([...canvas.captureStream(15).getVideoTracks(), ...audio]);
+  };
+};
+
+test('compartilhar o som da aba: chega como faixa separada, começa silenciado e toca ao ativar', async ({ browser }) => {
+  const room = uniqueRoom('somdaaba');
+  const ana = await newUser(browser);
+  const beto = await newUser(browser);
+  await ana.ctx.addInitScript(FAKE_TAB_WITH_AUDIO);
+  await enter(ana, room, 'Ana');
+  await enter(beto, room, 'Beto');
+  await expectConnected(beto.page, 'Ana');
+
+  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
+  await expect(ana.page.getByRole('button', { name: 'Tela', exact: true })).toHaveAttribute('title', /som da aba está sendo enviado/);
+
+  const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
+  await beto.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
+  await expect(screen).toBeVisible();
+  const video = screen.locator('video');
+  // a tela de outra pessoa entra silenciada; o vídeo remoto carrega uma faixa de áudio própria (não é o microfone)
+  expect(await video.evaluate((v: HTMLVideoElement) => v.muted)).toBe(true);
+  await expect
+    .poll(() => video.evaluate((v: HTMLVideoElement) => (v.srcObject as MediaStream).getAudioTracks().length))
+    .toBe(1);
+  await expect(screen.locator('.tile-flag-local')).toBeVisible();
+
+  await screen.getByRole('button', { name: 'Ativar som de Tela de Ana' }).click();
+  expect(await video.evaluate((v: HTMLVideoElement) => v.muted)).toBe(false);
+
+  // o som que chega é o tom de verdade, não silêncio
+  const peak = await video.evaluate(async (v: HTMLVideoElement) => {
+    const ac = new AudioContext();
+    await ac.resume();
+    const src = ac.createMediaStreamSource(new MediaStream((v.srcObject as MediaStream).getAudioTracks()));
+    const analyser = ac.createAnalyser();
+    src.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    let max = 0;
+    const end = performance.now() + 4000;
+    while (performance.now() < end && max < 0.02) {
+      analyser.getFloatTimeDomainData(buf);
+      for (const x of buf) max = Math.max(max, Math.abs(x));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return max;
+  });
+  expect(peak).toBeGreaterThan(0.02);
+
+  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
+  await expect(beto.page.locator('figure[data-testid="tile-screen"]')).toHaveCount(0);
+  expect(ana.errors).toEqual([]);
+  expect(beto.errors).toEqual([]);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+const playing = (tile: ReturnType<Page['locator']>) =>
+  tile.locator('video').evaluate((v: HTMLVideoElement) => !v.paused && v.readyState >= 2);
+
+test('ocultar tira a tela da grade, mantém o áudio tocando e "Mostrar" traz de volta', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'ocultar');
+  await expectConnected(ana.page, 'Beto');
+  const tile = tileOf(ana.page, 'Beto');
+  await expect(tile).toBeVisible();
+
+  await tile.getByRole('button', { name: 'Ocultar Beto' }).click();
+  await expect(tile).toBeHidden();
+  // oculto não é desligado: o vídeo segue tocando (e com som, se não foi silenciado)
+  await expect.poll(() => playing(tile)).toBe(true);
+  expect(await tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted)).toBe(false);
+
+  await ana.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Beto' }).click();
+  await expect(tile).toBeVisible();
+  await expect(ana.page.getByRole('region', { name: 'Telas ocultas' })).toHaveCount(0);
+  await expect.poll(() => playing(tile)).toBe(true);
+
+  // nada mudou para o Beto: ele continua vendo a Ana
+  await expect(tileOf(beto.page, 'Ana')).toBeVisible();
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('silenciar corta só o áudio daquela pessoa, neste navegador', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'silenciar');
+  await expectConnected(ana.page, 'Beto');
+  const tile = tileOf(ana.page, 'Beto');
+  const muted = () => tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted);
+
+  expect(await muted()).toBe(false);
+  await tile.getByRole('button', { name: 'Silenciar Beto' }).click();
+  await expect.poll(muted).toBe(true);
+  await expect(tile.getByRole('button', { name: 'Ativar som de Beto' })).toBeVisible();
+  // a própria câmera não oferece "silenciar"
+  await expect(tileOf(ana.page, 'Ana').getByRole('button', { name: /Silenciar/ })).toHaveCount(0);
+
+  await tile.getByRole('button', { name: 'Ativar som de Beto' }).click();
+  await expect.poll(muted).toBe(false);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('clicar na tela maximiza; Esc restaura; se a pessoa maximizada sai, a grade volta', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'maximizar');
+  await expectConnected(ana.page, 'Beto');
+  const tile = tileOf(ana.page, 'Beto');
+  const mine = tileOf(ana.page, 'Ana');
+
+  await tile.click({ position: { x: 24, y: 24 } });
+  await expect(tile).toHaveAttribute('data-maximized', 'true');
+  await expect(mine).toBeHidden();
+  await expect.poll(() => playing(tile)).toBe(true);
+
+  await ana.page.keyboard.press('Escape');
+  await expect(tile).not.toHaveAttribute('data-maximized', 'true');
+  await expect(mine).toBeVisible();
+
+  await tile.getByRole('button', { name: 'Maximizar Beto' }).click();
+  await expect(tile).toHaveAttribute('data-maximized', 'true');
+  await tile.getByRole('button', { name: 'Restaurar Beto' }).click();
+  await expect(mine).toBeVisible();
+
+  await tile.getByRole('button', { name: 'Maximizar Beto' }).click();
+  await beto.page.close({ runBeforeUnload: true });
+  await expect(tile).toHaveCount(0, { timeout: 25_000 });
+  await expect(mine).toBeVisible(); // nada de tela maximizada vazia
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('aba Telas: reordena, muda o layout e as colunas, e lembra a escolha ao recarregar', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'painel');
+  await expectConnected(ana.page, 'Beto');
+  await ana.page.getByRole('tab', { name: 'Telas' }).click();
+  const list = ana.page.getByTestId('tile-list');
+  const cams = ana.page.locator('[data-testid="tiles"] figure[data-testid="tile-camera"]');
+  await expect(cams.first()).toContainText('Ana');
+
+  await list.getByRole('button', { name: 'Subir Beto' }).click();
+  await expect(cams.first()).toContainText('Beto');
+  await expect(list.locator('li').first()).toContainText('Beto');
+
+  const tiles = ana.page.getByTestId('tiles');
+  await ana.page.getByLabel('Layout').selectOption('sidebar');
+  await expect(tiles).toHaveAttribute('data-layout', 'sidebar');
+  await ana.page.getByLabel('Layout').selectOption('grid');
+  await ana.page.getByLabel('Colunas').selectOption('2');
+  await expect(tiles).toHaveAttribute('data-columns', '2');
+
+  // ocultar e silenciar também pelo painel
+  await list.getByRole('button', { name: 'Ocultar Beto' }).click();
+  await expect(tileOf(ana.page, 'Beto')).toBeHidden();
+  await list.getByRole('button', { name: 'Mostrar Beto' }).click();
+  await expect(tileOf(ana.page, 'Beto')).toBeVisible();
+
+  await ana.page.getByLabel('Layout').selectOption('spotlight');
+  await ana.page.reload();
+  await ana.page.getByRole('tab', { name: 'Telas' }).click();
+  await expect(ana.page.getByLabel('Layout')).toHaveValue('spotlight');
+  await ana.page.getByRole('tab', { name: /Participantes/ }).click();
+  await expectConnected(ana.page, 'Beto');
   await ana.ctx.close();
   await beto.ctx.close();
 });

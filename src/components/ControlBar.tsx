@@ -6,6 +6,8 @@ type Props = {
   micOn: boolean;
   camOn: boolean;
   sharing: boolean;
+  /** a tela compartilhada está levando o som da aba */
+  sharingAudio: boolean;
   hasMic: boolean;
   hasCam: boolean;
   panelOpen: boolean;
@@ -14,6 +16,7 @@ type Props = {
   onCam(): void;
   onScreen(): void;
   onPanel(): void;
+  onSettings(): void;
   onRestart(): void;
   onLeave(): void;
 };
@@ -65,8 +68,21 @@ export function ControlBar(p: Props) {
         title={p.hasCam ? (p.camOn ? 'Desligar câmera' : 'Ligar câmera') : 'Câmera indisponível'}
         onClick={p.onCam}
       />
-      <Btn icon="screen" label="Tela" pressed={p.sharing} title={p.sharing ? 'Parar compartilhamento' : 'Compartilhar tela'} onClick={p.onScreen} />
+      <Btn
+        icon="screen"
+        label="Tela"
+        pressed={p.sharing}
+        title={
+          p.sharing
+            ? p.sharingAudio
+              ? 'Parar compartilhamento (o som da aba está sendo enviado)'
+              : 'Parar compartilhamento (sem som: ao escolher uma aba, marque "Compartilhar áudio da guia")'
+            : 'Compartilhar tela ou aba (marque "Compartilhar áudio" para enviar o som da aba)'
+        }
+        onClick={p.onScreen}
+      />
       <Btn icon="panel" label="Painel" pressed={p.panelOpen} title="Mostrar ou ocultar o painel lateral" onClick={p.onPanel} />
+      <Btn icon="settings" label="Configurações" title="Escolher microfone e saída de áudio" onClick={p.onSettings} />
       <Btn
         icon="refresh"
         label={p.restarting ? 'Reiniciando…' : 'Reiniciar conexões'}

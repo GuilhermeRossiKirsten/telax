@@ -2,19 +2,32 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, Participant, RoomFile } from '@/hooks/use-room';
+import type { ViewApi } from '@/hooks/use-view-state';
+import { LAYOUTS, MAX_COLUMNS, orderedTiles, tileLabel, type Layout } from '@/lib/view-state';
 import { Icon } from './Icon';
 import { CONN_LABEL } from './VideoTile';
 
-export type Tab = 'participants' | 'chat' | 'files';
+export type Tab = 'participants' | 'tiles' | 'chat' | 'files';
 const TABS: Array<[Tab, string]> = [
   ['participants', 'Participantes'],
+  ['tiles', 'Telas'],
   ['chat', 'Chat'],
   ['files', 'Arquivos'],
 ];
 
+const LAYOUT_LABEL: Record<Layout, string> = {
+  auto: 'Automático',
+  grid: 'Grade',
+  spotlight: 'Destaque (um grande e os outros embaixo)',
+  sidebar: 'Lateral (um grande e os outros ao lado)',
+};
+
 type Props = {
   tab: Tab;
   onTab(t: Tab): void;
+  tiles: ViewApi['tiles'];
+  view: ViewApi['view'];
+  onView: ViewApi['dispatch'];
   participants: Participant[];
   messages: ChatMessage[];
   files: RoomFile[];
@@ -40,6 +53,7 @@ export function SidePanel(p: Props) {
       </div>
       <div className="panel-body" role="tabpanel">
         {p.tab === 'participants' && <ParticipantList participants={p.participants} />}
+        {p.tab === 'tiles' && <TilesPanel tiles={p.tiles} view={p.view} onView={p.onView} />}
         {p.tab === 'chat' && <Chat messages={p.messages} selfId={p.selfId} onSend={p.onSendChat} />}
         {p.tab === 'files' && <Files files={p.files} nameOf={p.nameOf} onSend={p.onSendFile} />}
       </div>
@@ -66,6 +80,87 @@ function ParticipantList({ participants }: { participants: Participant[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function TilesPanel({ tiles, view, onView }: { tiles: ViewApi['tiles']; view: ViewApi['view']; onView: ViewApi['dispatch'] }) {
+  const ordered = orderedTiles(tiles, view);
+  const gridLike = view.layout === 'auto' || view.layout === 'grid';
+  return (
+    <div className="tiles-panel">
+      <label className="field">
+        Layout
+        <select value={view.layout} onChange={(e) => onView({ type: 'layout', layout: e.target.value as Layout })}>
+          {LAYOUTS.map((l) => (
+            <option key={l} value={l}>
+              {LAYOUT_LABEL[l]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        Colunas
+        <select
+          value={view.columns}
+          disabled={!gridLike}
+          onChange={(e) => onView({ type: 'columns', columns: Number(e.target.value) })}
+        >
+          <option value={0}>Automático</option>
+          {Array.from({ length: MAX_COLUMNS }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted small">
+        Vale só para você. Ocultar tira a imagem da grade (o som continua); silenciar corta o som. Clique numa tela para maximizar.
+      </p>
+      <ul className="list" data-testid="tile-list">
+        {ordered.length === 0 && <li className="muted">Nenhuma tela ainda.</li>}
+        {ordered.map((t, i) => {
+          const label = tileLabel(t);
+          const hidden = view.hidden.includes(t.id);
+          const muted = view.muted.includes(t.id);
+          return (
+            <li key={t.id} data-hidden={hidden || undefined}>
+              <span className="grow">
+                {label}
+                {hidden && <em> · oculta</em>}
+              </span>
+              <button className="icon-mini" aria-label={`Subir ${label}`} disabled={i === 0} onClick={() => onView({ type: 'move', id: t.id, dir: 'up' })}>
+                <Icon name="arrowUp" size={14} />
+              </button>
+              <button
+                className="icon-mini"
+                aria-label={`Descer ${label}`}
+                disabled={i === ordered.length - 1}
+                onClick={() => onView({ type: 'move', id: t.id, dir: 'down' })}
+              >
+                <Icon name="arrowDown" size={14} />
+              </button>
+              {!t.self && (
+                <button
+                  className="icon-mini"
+                  aria-pressed={muted}
+                  aria-label={muted ? `Ativar som de ${label}` : `Silenciar ${label}`}
+                  onClick={() => onView({ type: 'toggleMuted', id: t.id })}
+                >
+                  <Icon name={muted ? 'volumeOff' : 'volume'} size={14} />
+                </button>
+              )}
+              <button
+                className="icon-mini"
+                aria-label={hidden ? `Mostrar ${label}` : `Ocultar ${label}`}
+                onClick={() => onView({ type: 'toggleHidden', id: t.id })}
+              >
+                <Icon name={hidden ? 'eye' : 'eyeOff'} size={14} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

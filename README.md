@@ -8,6 +8,14 @@ intermedeia a sinalização, a presença e o chat.
 - Lista de participantes com estado de conexão (Conectando / Conectado / Reconectando / Falhou)
 - **Reiniciar conexões**: renegocia todos os pares sem ninguém sair da sala
 - Reconexão automática de pares e do canal de sinalização
+- **Controle das telas (só para quem o faz):** ocultar a imagem, silenciar o som, reordenar, clicar para
+  maximizar (Esc restaura) e escolher o layout (automático, grade com 1–4 colunas, destaque ou lateral)
+  na aba **Telas** do painel. Telas compartilhadas por outras pessoas entram ocultas e silenciadas: cada
+  um mostra e ativa o som da que quer
+- **Compartilhar o som da aba:** ao compartilhar uma aba, marque "Compartilhar áudio da guia" no seletor
+  do navegador; o som vai numa faixa própria, separada do microfone
+- **Configurações:** escolha do microfone e da saída de áudio (fone ou alto-falante), lembradas no
+  navegador. A saída depende de `setSinkId` (Chrome, Edge e Firefox recentes; não o Safari)
 - Até 8 participantes por sala; interface escura (paleta e fontes do rossik.dev.br: fundo oliva, destaque lima, Roboto/Oswald), responsiva; câmera e microfone entram mutados
 
 ## Como rodar
@@ -98,9 +106,12 @@ seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o b
   a 128 KiB.
 - **Mesh P2P:** um `RTCPeerConnection` por par de participantes. O menor `peerId` do par é sempre
   quem oferece, o outro só responde, o que elimina ofertas simultâneas conflitantes.
-- **Mídia sem renegociar:** o offerer cria 3 transceivers (áudio, vídeo da câmera, vídeo da tela) e
-  quem responde adota os criados pela offer; ligar/desligar câmera, microfone e tela é
-  `replaceTrack`, sem nova negociação.
+- **Mídia sem renegociar:** o offerer cria 4 transceivers (áudio do microfone, vídeo da câmera, vídeo da
+  tela e áudio da tela/aba) e quem responde adota os criados pela offer, na mesma ordem; ligar/desligar
+  câmera, microfone e tela, e trocar de microfone, é `replaceTrack`, sem nova negociação.
+- **Telas e dispositivos são decisões locais:** ocultar, silenciar, reordenar, maximizar, layout e
+  dispositivos de áudio ficam no navegador de cada pessoa (`src/lib/view-state.ts`, um reducer puro); nada
+  disso passa pelo servidor nem muda para os outros.
 - **Reinício global:** o botão incrementa um número de geração (`gen`) no servidor e avisa todos.
   Cada cliente recria seus pares; só o lado offerer reoferta, por uma fila que limita a 2
   renegociações simultâneas. Sinais de geração anterior são descartados.
@@ -134,7 +145,11 @@ seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o b
   da instância (ou o armazenamento do cluster, com MongoDB; lá o TTL de 1 h apaga as abandonadas). As
   requisições e cada sala têm limites, o total de salas não.
 - **Histórico e MIME:** o tipo (MIME) de um arquivo recebido é o declarado por quem enviou.
-- Sem tratamento de troca de dispositivo (câmera/microfone) durante a chamada.
+- Só o **microfone** e a **saída de áudio** podem ser trocados durante a chamada; a câmera não.
+- O **som da aba** só existe se o navegador o entregar (Chrome/Edge, ao compartilhar uma aba ou, no Windows, a
+  tela inteira, com a caixa de áudio marcada); janelas e o Safari costumam não oferecer. Não há mixagem: o som
+  da aba e o microfone viajam em faixas separadas.
+- A reordenação das telas é por botões (subir/descer), não por arrastar e soltar.
 - Um erro de join diferente de "sala cheia" (por exemplo, 500 do servidor) aparece como
   "Reconectando" e o app segue tentando; não há tela de erro dedicada.
 
@@ -189,9 +204,9 @@ publicado nem testado lá).
 ```
 src/server/      RoomStore (interface), MemoryRoomStore, MongoRoomStore, escolha por ambiente (store.ts), ICE, helpers das rotas
 src/app/api/     rotas de sinalização (join, events, signal, chat, state, restart, leave)
-src/lib/         cliente de sinalização, PeerManager, regras de negociação, arquivos, validação
-src/hooks/       useLocalMedia (câmera/mic/tela), useRoom (sala + mesh)
-src/components/  JoinForm, RoomView, VideoGrid, VideoTile, SidePanel, ControlBar
+src/lib/         cliente de sinalização, PeerManager, regras de negociação, arquivos, validação, view-state (exibição das telas), devices (dispositivos de áudio)
+src/hooks/       useLocalMedia (câmera/mic/tela/som da aba), useRoom (sala + mesh), useViewState, useDevices
+src/components/  JoinForm, RoomView, VideoGrid, VideoTile, SidePanel (aba Telas), ControlBar, SettingsDialog
 e2e/             testes Playwright
 docs/superpowers/  spec, plano e ledger do desenvolvimento
 ```

@@ -72,7 +72,7 @@ class FakePC {
     this.remoteDescription = d;
     if (d.type === 'offer') {
       // Como o Chrome: transceivers de addTransceiver NÃO são reaproveitados; a offer cria novos, recvonly.
-      (['audio', 'video', 'video'] as const).forEach((kind, i) => {
+      (['audio', 'video', 'video', 'audio'] as const).forEach((kind, i) => {
         const t = new FakeTransceiver(kind);
         t.mid = String(i);
         t.direction = 'recvonly';
@@ -128,10 +128,10 @@ afterEach(() => {
 });
 
 describe('criação do par', () => {
-  it('cria 3 transceivers na ordem áudio, vídeo, vídeo', () => {
+  it('cria 4 transceivers na ordem áudio, câmera, tela, áudio da tela', () => {
     const { manager } = setup('a');
     manager.addPeer('b');
-    expect(FakePC.all[0].transceivers.map((t) => t.kind)).toEqual(['audio', 'video', 'video']);
+    expect(FakePC.all[0].transceivers.map((t) => t.kind)).toEqual(['audio', 'video', 'video', 'audio']);
     manager.close();
   });
 
@@ -142,21 +142,21 @@ describe('criação do par', () => {
     manager.close();
   });
 
-  it('quem responde adota os 3 transceivers da offer como sendrecv, com os tracks locais, antes da answer', async () => {
+  it('quem responde adota os 4 transceivers da offer como sendrecv, com os tracks locais, antes da answer', async () => {
     const { manager, signals } = setup('b');
     const audio = track('audio');
     const camera = track('video');
-    manager.setLocalTracks({ audio, camera, screen: null });
+    manager.setLocalTracks({ audio, camera, screen: null, screenAudio: null });
     manager.addPeer('a');
     await manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
     const tx = FakePC.all[0].transceivers;
-    expect(tx).toHaveLength(3);
-    expect(tx.map((t) => t.direction)).toEqual(['sendrecv', 'sendrecv', 'sendrecv']);
-    expect(tx.map((t) => t.sender.track)).toEqual([audio, camera, null]);
+    expect(tx).toHaveLength(4);
+    expect(tx.map((t) => t.direction)).toEqual(['sendrecv', 'sendrecv', 'sendrecv', 'sendrecv']);
+    expect(tx.map((t) => t.sender.track)).toEqual([audio, camera, null, null]);
     expect(signals.at(-1)?.data.kind).toBe('answer');
 
     const screen = track('video');
-    manager.setLocalTracks({ audio, camera, screen });
+    manager.setLocalTracks({ audio, camera, screen, screenAudio: null });
     await flush();
     expect(tx[2].sender.track).toBe(screen);
     manager.close();
@@ -343,17 +343,17 @@ describe('id de sessão (sid)', () => {
 });
 
 describe('mídia local e remota', () => {
-  it('setLocalTracks faz replaceTrack nos 3 transceivers sem nova offer', async () => {
+  it('setLocalTracks faz replaceTrack nos 4 transceivers sem nova offer', async () => {
     const { manager, offers } = setup('a');
     manager.addPeer('b');
     await flush();
     const before = offers().length;
     const audio = track('audio');
     const camera = track('video');
-    manager.setLocalTracks({ audio, camera, screen: null });
+    manager.setLocalTracks({ audio, camera, screen: null, screenAudio: null });
     await flush();
     const tx = FakePC.all[0].transceivers;
-    expect(tx.map((t) => t.sender.track)).toEqual([audio, camera, null]);
+    expect(tx.map((t) => t.sender.track)).toEqual([audio, camera, null, null]);
     expect(offers()).toHaveLength(before);
     manager.close();
   });
@@ -361,7 +361,7 @@ describe('mídia local e remota', () => {
   it('pares criados depois já nascem com os tracks locais', async () => {
     const { manager } = setup('a');
     const audio = track('audio');
-    manager.setLocalTracks({ audio, camera: null, screen: null });
+    manager.setLocalTracks({ audio, camera: null, screen: null, screenAudio: null });
     manager.addPeer('b');
     await flush();
     expect(FakePC.all[0].transceivers[0].sender.track).toBe(audio);
@@ -391,6 +391,48 @@ describe('mídia local e remota', () => {
     pc.ontrack?.({ track: scr, transceiver: pc.transceivers[2] });
     expect(remote.at(-1)).toEqual(['b', { camera: cam, screen: scr }]);
     manager.close();
+  });
+});
+
+describe('áudio da aba compartilhada', () => {
+  it('o áudio da tela sai pelo 4º transceiver, junto com a tela, sem nova offer', async () => {
+    const { manager, offers } = setup('a');
+    manager.addPeer('b');
+    await flush();
+    const before = offers().length;
+    const audio = track('audio');
+    const screen = track('video');
+    const screenAudio = track('audio');
+    manager.setLocalTracks({ audio, camera: null, screen, screenAudio });
+    await flush();
+    const tx = FakePC.all[0].transceivers;
+    expect(tx.map((t) => t.sender.track)).toEqual([audio, null, screen, screenAudio]);
+    expect(offers()).toHaveLength(before);
+    manager.setLocalTracks({ audio, camera: null, screen: null, screenAudio: null });
+    await flush();
+    expect(tx[3].sender.track).toBeNull();
+    manager.close();
+  });
+
+  it('o áudio remoto da tela chega separado do microfone, nos dois papéis', async () => {
+    const offerer = setup('a');
+    offerer.manager.addPeer('b');
+    const pcA = FakePC.all[0];
+    const mic = track('audio');
+    const tab = track('audio');
+    pcA.ontrack?.({ track: mic, transceiver: pcA.transceivers[0] });
+    pcA.ontrack?.({ track: tab, transceiver: pcA.transceivers[3] });
+    expect(offerer.remote.at(-1)).toEqual(['b', { audio: mic, screenAudio: tab }]);
+    offerer.manager.close();
+
+    const answerer = setup('b');
+    answerer.manager.addPeer('a');
+    await answerer.manager.handleSignal('a', { gen: 0, kind: 'offer', sid: 1, sdp: 'o' });
+    const pcB = FakePC.all[1];
+    const tab2 = track('audio');
+    pcB.ontrack?.({ track: tab2, transceiver: pcB.transceivers[3] });
+    expect(answerer.remote.at(-1)).toEqual(['a', { screenAudio: tab2 }]);
+    answerer.manager.close();
   });
 });
 

@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { applySinkId } from '@/lib/devices';
 import type { ConnState } from '@/lib/peer-manager';
 import { Icon } from './Icon';
 
@@ -14,17 +15,46 @@ export const CONN_LABEL: Record<ConnState | 'self', string> = {
 
 type Props = {
   stream: MediaStream | null;
+  /** nome completo mostrado no tile e nos botões (ex.: "Tela de Ana") */
+  label: string;
   name: string;
   isSelf?: boolean;
   kind?: 'camera' | 'screen';
   audioOn?: boolean;
   videoOn?: boolean;
   conn: ConnState | 'self';
+  /** áudio silenciado só neste navegador */
+  muted?: boolean;
+  maximized?: boolean;
+  /** dispositivo de saída de áudio escolhido nas Configurações */
+  sinkId?: string;
+  onToggleMuted?(): void;
+  onHide?(): void;
+  onToggleMaximize?(): void;
 };
 
-export function VideoTile({ stream, name, isSelf = false, kind = 'camera', audioOn = true, videoOn = true, conn }: Props) {
+export function VideoTile({
+  stream,
+  label,
+  name,
+  isSelf = false,
+  kind = 'camera',
+  audioOn = true,
+  videoOn = true,
+  conn,
+  muted = false,
+  maximized = false,
+  sinkId,
+  onToggleMuted,
+  onHide,
+  onToggleMaximize,
+}: Props) {
   const ref = useRef<HTMLVideoElement>(null);
   const [blocked, setBlocked] = useState(false);
+
+  useEffect(() => {
+    if (ref.current && sinkId && !isSelf) void applySinkId(ref.current, sinkId);
+  }, [sinkId, isSelf]);
 
   useEffect(() => {
     const video = ref.current;
@@ -37,15 +67,26 @@ export function VideoTile({ stream, name, isSelf = false, kind = 'camera', audio
   }, [stream]);
 
   const hasVideo = !!stream && stream.getVideoTracks().length > 0 && (kind === 'screen' || videoOn);
-  const label = kind === 'screen' ? `Tela de ${name}` : isSelf ? `${name} (você)` : name;
+  // a própria imagem já sai muda no elemento (evita eco); câmera e tela dos outros podem ser silenciadas
+  const canMute = !isSelf;
+  const stop = (fn?: () => void) => (e: MouseEvent) => {
+    e.stopPropagation();
+    fn?.();
+  };
 
   return (
-    <figure className={`tile ${kind === 'screen' ? 'tile-screen' : ''}`} data-conn={conn} data-testid={`tile-${kind}`}>
+    <figure
+      className={`tile ${kind === 'screen' ? 'tile-screen' : ''}`}
+      data-conn={conn}
+      data-testid={`tile-${kind}`}
+      data-maximized={maximized ? 'true' : undefined}
+      onClick={onToggleMaximize}
+    >
       <video
         ref={ref}
         autoPlay
         playsInline
-        muted={isSelf}
+        muted={isSelf || muted}
         className={isSelf && kind === 'camera' ? 'mirrored' : undefined}
         style={{ visibility: hasVideo ? 'visible' : 'hidden' }}
       />
@@ -55,15 +96,43 @@ export function VideoTile({ stream, name, isSelf = false, kind = 'camera', audio
         </div>
       )}
       {blocked && (
-        <button className="unblock" onClick={() => ref.current?.play().then(() => setBlocked(false), () => {})}>
+        <button className="unblock" onClick={stop(() => ref.current?.play().then(() => setBlocked(false), () => {}))}>
           Clique para ativar o áudio
         </button>
       )}
+      <div className="tile-actions">
+        {canMute && (
+          <button
+            className="tile-btn"
+            aria-label={muted ? `Ativar som de ${label}` : `Silenciar ${label}`}
+            title={muted ? 'Voltar a ouvir esta pessoa' : 'Parar de ouvir esta pessoa (só para você)'}
+            onClick={stop(onToggleMuted)}
+          >
+            <Icon name={muted ? 'volumeOff' : 'volume'} size={16} />
+          </button>
+        )}
+        <button className="tile-btn" aria-label={`Ocultar ${label}`} title="Ocultar esta tela (só para você)" onClick={stop(onHide)}>
+          <Icon name="eyeOff" size={16} />
+        </button>
+        <button
+          className="tile-btn"
+          aria-label={maximized ? `Restaurar ${label}` : `Maximizar ${label}`}
+          title={maximized ? 'Voltar ao layout' : 'Maximizar'}
+          onClick={stop(onToggleMaximize)}
+        >
+          <Icon name={maximized ? 'minimize' : 'maximize'} size={16} />
+        </button>
+      </div>
       <figcaption>
         <span className="tile-name">{label}</span>
         {kind === 'camera' && !audioOn && (
           <span className="tile-flag" title="Microfone desligado">
             <Icon name="micOff" size={14} />
+          </span>
+        )}
+        {muted && (
+          <span className="tile-flag tile-flag-local" title="Você silenciou esta pessoa">
+            <Icon name="volumeOff" size={14} />
           </span>
         )}
         {!isSelf && (

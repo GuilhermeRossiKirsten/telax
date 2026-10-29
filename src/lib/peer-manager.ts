@@ -4,8 +4,9 @@ import type { SignalData } from './types';
 
 export type ConnState = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
-type Slot = 'audio' | 'camera' | 'screen';
-const SLOTS: Slot[] = ['audio', 'camera', 'screen'];
+/** `screenAudio`: som da aba/tela compartilhada, separado do microfone (4ª m-line). */
+type Slot = 'audio' | 'camera' | 'screen' | 'screenAudio';
+const SLOTS: Slot[] = ['audio', 'camera', 'screen', 'screenAudio'];
 type RemoteTracks = Partial<Record<Slot, MediaStreamTrack>>;
 type LocalTracks = Record<Slot, MediaStreamTrack | null>;
 
@@ -57,7 +58,7 @@ export class PeerManager {
   private peers = new Map<string, Entry>();
   private gen: number;
   private queue = new RestartQueue(2);
-  private local: LocalTracks = { audio: null, camera: null, screen: null };
+  private local: LocalTracks = { audio: null, camera: null, screen: null, screenAudio: null };
   private closed = false;
 
   constructor(private opts: PeerManagerOpts) {
@@ -162,6 +163,7 @@ export class PeerManager {
         audio: pc.addTransceiver('audio', { direction: 'sendrecv' }),
         camera: pc.addTransceiver('video', { direction: 'sendrecv' }),
         screen: pc.addTransceiver('video', { direction: 'sendrecv' }),
+        screenAudio: pc.addTransceiver('audio', { direction: 'sendrecv' }),
       };
       this.applyLocalTracks(e);
       this.attachChannel(e, pc.createDataChannel('files'));

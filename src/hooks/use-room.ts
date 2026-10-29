@@ -117,7 +117,7 @@ export function useRoom(args: { room: string; name: string; tracks: LocalTracks;
               streamMap.set(id, entry);
             }
             syncStream(entry.camera, [t.audio, t.camera]);
-            syncStream(entry.screen, [t.screen]);
+            syncStream(entry.screen, [t.screen, t.screenAudio]);
             const shared = entry;
             setStreams((s) => ({ ...s, [id]: { ...shared } }));
           },

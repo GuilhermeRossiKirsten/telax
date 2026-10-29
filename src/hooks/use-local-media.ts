@@ -7,6 +7,8 @@ export type LocalTracks = {
   audio: MediaStreamTrack | null;
   camera: MediaStreamTrack | null;
   screen: MediaStreamTrack | null;
+  /** som da aba compartilhada (só existe se o navegador o entregou e o usuário marcou "compartilhar áudio") */
+  screenAudio: MediaStreamTrack | null;
 };
 
 const ATTEMPTS: MediaStreamConstraints[] = [{ audio: true, video: true }, { audio: true }, { video: true }];
@@ -26,10 +28,12 @@ export function useLocalMedia() {
   const screenRef = useRef<MediaStream | null>(null);
   const cameraRef = useRef<MediaStream | null>(null);
   const releasedRef = useRef(false);
+  const aliveRef = useRef(true);
+  const micSeqRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    let acquired: MediaStream | null = null;
+    aliveRef.current = true;
 
     (async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -44,7 +48,6 @@ export function useLocalMedia() {
           if (cancelled || releasedRef.current) return stopStream(stream);
           // entra mutado: o dispositivo fica aberto (ligar depois é instantâneo), mas nada é enviado
           stream.getTracks().forEach((t) => (t.enabled = false));
-          acquired = stream;
           cameraRef.current = stream;
           setCamera(stream);
           setMicOn(false);
@@ -66,7 +69,10 @@ export function useLocalMedia() {
 
     return () => {
       cancelled = true;
-      stopStream(acquired);
+      aliveRef.current = false;
+      // cameraRef (e não o stream da captura inicial): o selectMic pode ter trocado o stream da câmera
+      stopStream(cameraRef.current);
+      cameraRef.current = null;
       stopStream(screenRef.current);
       screenRef.current = null;
     };
@@ -84,6 +90,44 @@ export function useLocalMedia() {
     setMicOn(false);
     setCamOn(false);
   }, []);
+
+  /**
+   * Troca o microfone em uso sem derrubar a chamada: captura o novo dispositivo e entrega um stream novo
+   * (mesmo vídeo + novo áudio), o que faz o use-room dar `replaceTrack` nas conexões. O estado ligado/mutado é herdado.
+   */
+  const selectMic = useCallback(
+    async (deviceId: string) => {
+      const current = cameraRef.current ?? camera;
+      if (!deviceId || !current || releasedRef.current) return;
+      const old = current.getAudioTracks()[0];
+      if (old && old.readyState === 'live' && old.getSettings().deviceId === deviceId) return;
+
+      const seq = ++micSeqRef.current;
+      let fresh: MediaStream;
+      try {
+        fresh = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+      } catch {
+        // continua com o microfone anterior: a chamada não cai por causa de um dispositivo que não abriu
+        if (aliveRef.current && seq === micSeqRef.current) setError('Não foi possível usar esse microfone.');
+        return;
+      }
+      const track = fresh.getAudioTracks()[0];
+      const base = cameraRef.current;
+      // saiu da sala, desmontou ou outra troca mais nova chegou enquanto a permissão/captura estava pendente
+      if (!track || !base || !aliveRef.current || releasedRef.current || seq !== micSeqRef.current) {
+        stopStream(fresh);
+        return;
+      }
+      const previous = base.getAudioTracks()[0];
+      track.enabled = previous ? previous.enabled : false;
+      const next = new MediaStream([track, ...base.getVideoTracks()]);
+      cameraRef.current = next;
+      setCamera(next);
+      setMicOn(track.enabled);
+      previous?.stop();
+    },
+    [camera],
+  );
 
   const toggleMic = useCallback(() => {
     const t = camera?.getAudioTracks()[0];
@@ -108,7 +152,7 @@ export function useLocalMedia() {
   const toggleScreen = useCallback(async () => {
     if (screenRef.current) return stopScreen();
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       // o botão "parar compartilhamento" do navegador encerra o track por fora do nosso botão
       stream.getVideoTracks()[0].addEventListener('ended', () => {
         if (screenRef.current === stream) stopScreen();
@@ -126,6 +170,7 @@ export function useLocalMedia() {
       audio: camera?.getAudioTracks()[0] ?? null,
       camera: camera?.getVideoTracks()[0] ?? null,
       screen: screen?.getVideoTracks()[0] ?? null,
+      screenAudio: screen?.getAudioTracks()[0] ?? null,
     }),
     [camera, screen],
   );
@@ -137,10 +182,12 @@ export function useLocalMedia() {
     micOn,
     camOn,
     sharing: screen !== null,
+    sharingAudio: tracks.screenAudio !== null,
     hasMic: tracks.audio !== null,
     hasCam: tracks.camera !== null,
     error,
     stopAll,
+    selectMic,
     toggleMic,
     toggleCam,
     toggleScreen,

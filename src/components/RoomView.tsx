@@ -3,10 +3,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDevices } from '@/hooks/use-devices';
 import { useLocalMedia } from '@/hooks/use-local-media';
 import { useRoom } from '@/hooks/use-room';
+import { useViewState } from '@/hooks/use-view-state';
 import { ControlBar } from './ControlBar';
 import { Icon } from './Icon';
+import { SettingsDialog } from './SettingsDialog';
 import { SidePanel, type Tab } from './SidePanel';
 import { VideoGrid } from './VideoGrid';
 
@@ -20,6 +23,20 @@ export function RoomView({ room, name }: { room: string; name: string }) {
     [local.micOn, local.camOn, local.sharing],
   );
   const r = useRoom({ room, name, tracks: local.tracks, media });
+  const screens = useViewState(r.participants);
+  const devices = useDevices();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // os nomes dos dispositivos só aparecem depois da permissão de mídia; e a escolha salva vale assim que a câmera existe
+  const { refresh: refreshDevices } = devices;
+  useEffect(() => {
+    if (local.camera) void refreshDevices();
+  }, [local.camera, refreshDevices]);
+  const { micId, outputId } = devices;
+  const { selectMic } = local;
+  useEffect(() => {
+    if (micId) void selectMic(micId);
+  }, [micId, selectMic]);
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('participants');
@@ -133,6 +150,10 @@ export function RoomView({ room, name }: { room: string; name: string }) {
               remoteStreams={r.remoteStreams}
               localCamera={local.camera}
               localScreen={local.screen}
+              tiles={screens.tiles}
+              view={screens.view}
+              dispatch={screens.dispatch}
+              sinkId={outputId}
             />
           ) : (
             <p className="muted center">Entrando na sala…</p>
@@ -142,6 +163,9 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           <SidePanel
             tab={tab}
             onTab={setTab}
+            tiles={screens.tiles}
+            view={screens.view}
+            onView={screens.dispatch}
             participants={r.participants}
             messages={r.messages}
             files={r.files}
@@ -157,6 +181,7 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         micOn={local.micOn}
         camOn={local.camOn}
         sharing={local.sharing}
+        sharingAudio={local.sharingAudio}
         hasMic={local.hasMic}
         hasCam={local.hasCam}
         panelOpen={panelOpen}
@@ -165,9 +190,11 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         onCam={local.toggleCam}
         onScreen={local.toggleScreen}
         onPanel={() => setPanelOpen((o) => !o)}
+        onSettings={() => setSettingsOpen(true)}
         onRestart={restart}
         onLeave={() => router.push('/')}
       />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} devices={devices} />
     </div>
   );
 }
