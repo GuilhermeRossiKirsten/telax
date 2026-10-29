@@ -26,7 +26,9 @@ export function SettingsDialog({ open, onClose, devices }: Props) {
   useEffect(() => {
     if (!open) return;
     const opener = document.activeElement as HTMLElement | null;
-    micField.current?.focus();
+    // sem microfone o campo está desabilitado e não recebe foco: o foco entra no próprio cartão
+    if (micField.current && !micField.current.disabled) micField.current.focus();
+    else card.current?.focus();
 
     // captura no document: o Esc fecha só a janela e não chega ao Esc da sala (que restaura a tela maximizada)
     function onKey(e: KeyboardEvent) {
@@ -71,7 +73,7 @@ export function SettingsDialog({ open, onClose, devices }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div ref={card} className="sd-card" role="dialog" aria-modal="true" aria-label="Configurações">
+      <div ref={card} className="sd-card" role="dialog" aria-modal="true" aria-label="Configurações" tabIndex={-1}>
         <h2 className="sd-title">Configurações</h2>
         <p className="sd-help">A troca vale na hora. Só você usa essa escolha: ela não muda nada para os outros participantes.</p>
 

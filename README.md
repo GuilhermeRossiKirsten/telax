@@ -175,14 +175,14 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos) | `npx vitest run` | 161 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 213 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (12 cenários), 1 execução, store em memória | `npx playwright test` | 12 passaram |
-| E2E, 2 participantes (12 cenários), 1 execução, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram |
+| E2E, 2 participantes (23 cenários, incluindo mutados ao entrar, ocultar/silenciar/maximizar/layout, som da aba e dispositivos), 1 execução, store em memória | `npx playwright test` | 23 passaram |
+| E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
-| E2E, 3 participantes (5 cenários), 1 execução, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
+| E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |
 | Duas instâncias de produção atrás de um balanceador round-robin, **sem MongoDB** (manual, 1 aba, 20 s) | script ad hoc | 4 `join` e tela de erro (antes: 9 em 25 s, sem parar) |
 | Duas instâncias atrás do round-robin, **com MongoDB** (manual, 2 pessoas, 26 s) | script ad hoc | "2 na sala" estável nos dois, 1 `join` cada, "Conectado" com vídeo avançando, 0 erros HTTP/console/servidor |
 
@@ -195,7 +195,7 @@ a aba; sala com acento no nome; 9º participante ("Sala cheia", com câmera e mi
 em 3 pessoas, as 3 conexões do mesh, chat, reinício global feito por uma pessoa e por duas ao mesmo
 tempo, e saída de um participante.
 
-Não foi executado: **MongoDB Atlas real e o deploy na Vercel** (os testes usaram um MongoDB 7 local em Docker), TURN real, redes com NAT simétrico, Firefox/Safari, câmeras reais, mais de 3
+Não foi executado: **MongoDB Atlas real e o deploy na Vercel** (os testes usaram um MongoDB 7 local em Docker), **o som da aba com captura real** (os e2e simulam `getDisplayMedia` com um tom de 440 Hz; como o Chrome trata `systemAudio: 'exclude'` e o Safari trata `audio: true` não foi verificado), dispositivos de áudio reais (os e2e usam os falsos do Chromium), TURN real, redes com NAT simétrico, Firefox/Safari, câmeras reais, mais de 3
 participantes em paralelo, e deploy real na Vercel (o projeto é um app Next.js padrão, mas não foi
 publicado nem testado lá).
 

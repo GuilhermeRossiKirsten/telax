@@ -57,6 +57,9 @@ export function useViewState(participants: ReadonlyArray<Person>) {
   useEffect(() => {
     if (!maximized) return;
     const onKey = (e: KeyboardEvent) => {
+      // Esc enquanto se digita (chat) ou se escolhe num select não deve restaurar a tela
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
       if (e.key === 'Escape') dispatch({ type: 'maximize', id: null });
     };
     window.addEventListener('keydown', onKey);

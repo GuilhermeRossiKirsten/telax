@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
-import { applySinkId } from '@/lib/devices';
+import { useEffect, useRef, type MouseEvent } from 'react';
 import type { ConnState } from '@/lib/peer-manager';
 import { Icon } from './Icon';
 
@@ -23,11 +22,9 @@ type Props = {
   audioOn?: boolean;
   videoOn?: boolean;
   conn: ConnState | 'self';
-  /** áudio silenciado só neste navegador */
+  /** áudio silenciado só neste navegador (o som em si toca no RemoteAudio; aqui só o botão e o selo) */
   muted?: boolean;
   maximized?: boolean;
-  /** dispositivo de saída de áudio escolhido nas Configurações */
-  sinkId?: string;
   onToggleMuted?(): void;
   onHide?(): void;
   onToggleMaximize?(): void;
@@ -44,23 +41,17 @@ export function VideoTile({
   conn,
   muted = false,
   maximized = false,
-  sinkId,
   onToggleMuted,
   onHide,
   onToggleMaximize,
 }: Props) {
   const ref = useRef<HTMLVideoElement>(null);
-  const [blocked, setBlocked] = useState(false);
-
-  useEffect(() => {
-    if (ref.current && sinkId && !isSelf) void applySinkId(ref.current, sinkId);
-  }, [sinkId, isSelf]);
 
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
     video.srcObject = stream;
-    if (stream) video.play().then(() => setBlocked(false), () => setBlocked(true));
+    if (stream) video.play().catch(() => {}); // mudo: o autoplay é sempre permitido
     return () => {
       video.srcObject = null;
     };
@@ -86,7 +77,7 @@ export function VideoTile({
         ref={ref}
         autoPlay
         playsInline
-        muted={isSelf || muted}
+        muted
         className={isSelf && kind === 'camera' ? 'mirrored' : undefined}
         style={{ visibility: hasVideo ? 'visible' : 'hidden' }}
       />
@@ -94,11 +85,6 @@ export function VideoTile({
         <div className="avatar" aria-hidden="true">
           {name.slice(0, 1).toUpperCase()}
         </div>
-      )}
-      {blocked && (
-        <button className="unblock" onClick={stop(() => ref.current?.play().then(() => setBlocked(false), () => {}))}>
-          Clique para ativar o áudio
-        </button>
       )}
       <div className="tile-actions">
         {canMute && (

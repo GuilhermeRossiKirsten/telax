@@ -49,15 +49,16 @@ export function useDevices() {
   }, [refresh]);
 
   const setMicId = useCallback((id: string) => {
-    const label = lists.current.inputs.find((o) => o.id === id)?.label;
-    wanted.current = { ...wanted.current, micId: id, micLabel: label };
+    const opt = lists.current.inputs.find((o) => o.id === id);
+    // rótulo gerado por nós ("Microfone 2") não identifica o aparelho: não vale como reserva
+    wanted.current = { ...wanted.current, micId: id, micLabel: opt && !opt.generic ? opt.label : undefined };
     saveDevicePrefs(wanted.current);
     setMic(id);
   }, []);
 
   const setOutputId = useCallback((id: string) => {
-    const label = lists.current.outputs.find((o) => o.id === id)?.label;
-    wanted.current = { ...wanted.current, outputId: id, outputLabel: label };
+    const opt = lists.current.outputs.find((o) => o.id === id);
+    wanted.current = { ...wanted.current, outputId: id, outputLabel: opt && !opt.generic ? opt.label : undefined };
     saveDevicePrefs(wanted.current);
     setOutput(id);
   }, []);

@@ -1,6 +1,7 @@
 /** Dispositivos de áudio: listagem, escolha, saída (`setSinkId`) e preferências salvas no navegador. */
 
-export type DeviceOption = { id: string; label: string };
+/** `generic`: o rótulo foi gerado por nós (sem permissão o navegador não informa o nome); não serve para reencontrar o dispositivo. */
+export type DeviceOption = { id: string; label: string; generic?: true };
 /**
  * Os rótulos servem de reserva: alguns navegadores geram ids novos para os mesmos dispositivos
  * (ao limpar dados do site, em janela anônima, a cada carregamento), mas o nome continua igual.
@@ -25,7 +26,12 @@ export function toOptions(
     if (d.kind !== kind || !d.deviceId || seen.has(d.deviceId)) continue;
     seen.add(d.deviceId);
     // sem permissão de mídia os rótulos vêm vazios
-    options.push({ id: d.deviceId, label: d.label.trim() || `${DEFAULT_LABEL[kind]} ${options.length + 1}` });
+    const label = d.label.trim();
+    options.push(
+      label
+        ? { id: d.deviceId, label }
+        : { id: d.deviceId, label: `${DEFAULT_LABEL[kind]} ${options.length + 1}`, generic: true },
+    );
   }
   return options;
 }
@@ -37,8 +43,9 @@ export function pickDevice(
   preferredLabel?: string | null,
 ): string {
   if (preferredId && options.some((o) => o.id === preferredId)) return preferredId;
-  const byLabel = preferredLabel ? options.find((o) => o.label === preferredLabel) : undefined;
-  if (byLabel) return byLabel.id;
+  // só casa pelo rótulo quando ele é único: dois aparelhos iguais ("USB Audio Device") cairiam sempre no primeiro
+  const sameLabel = preferredLabel ? options.filter((o) => o.label === preferredLabel) : [];
+  if (sameLabel.length === 1) return sameLabel[0].id;
   if (options.some((o) => o.id === 'default')) return 'default';
   return options[0]?.id ?? '';
 }

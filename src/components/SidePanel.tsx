@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ChatMessage, Participant, RoomFile } from '@/hooks/use-room';
 import type { ViewApi } from '@/hooks/use-view-state';
-import { LAYOUTS, MAX_COLUMNS, orderedTiles, tileLabel, type Layout } from '@/lib/view-state';
+import { LAYOUTS, MAX_COLUMNS, effectiveLayout, orderedTiles, tileLabel, visibleTiles, type Layout } from '@/lib/view-state';
 import { Icon } from './Icon';
 import { CONN_LABEL } from './VideoTile';
 
@@ -85,7 +85,8 @@ function ParticipantList({ participants }: { participants: Participant[] }) {
 
 function TilesPanel({ tiles, view, onView }: { tiles: ViewApi['tiles']; view: ViewApi['view']; onView: ViewApi['dispatch'] }) {
   const ordered = orderedTiles(tiles, view);
-  const gridLike = view.layout === 'auto' || view.layout === 'grid';
+  // colunas só têm efeito quando o que se vê é a grade (o `auto` vira destaque se há uma tela visível)
+  const gridLike = effectiveLayout(visibleTiles(tiles, view), view) === 'grid';
   return (
     <div className="tiles-panel">
       <label className="field">

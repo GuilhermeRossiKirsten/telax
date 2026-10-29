@@ -78,6 +78,24 @@ const latestAudio = (p: Page) =>
       : null;
   });
 
+/**
+ * Espera a captura de áudio assentar antes de tomar a medida de referência: uma escolha salva pode ser
+ * reaplicada logo na entrada, e uma captura tardia faria "captures > before" passar antes da troca do teste.
+ */
+async function settledAudio(p: Page) {
+  let last = (await latestAudio(p))?.captures;
+  await expect
+    .poll(async () => {
+      await p.waitForTimeout(300);
+      const now = (await latestAudio(p))?.captures;
+      const stable = now === last;
+      last = now;
+      return stable;
+    })
+    .toBe(true);
+  return latestAudio(p);
+}
+
 /** Escolhe, entre as opções do select, uma diferente da atual; devolve o id escolhido ou null se não houver. */
 async function pickOtherMic(p: Page): Promise<string | null> {
   const current = await micSelect(p).inputValue();
@@ -114,12 +132,12 @@ test('Configurações lista os microfones e a saída de áudio, e fecha por bot�
 test('trocar o microfone com ele mutado NÃO desmuta e a chamada continua conectada', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'troca-mutado');
   await expect(micButton(ana.page)).toHaveAttribute('aria-pressed', 'false');
-  const before = await latestAudio(ana.page);
+  const before = await settledAudio(ana.page);
   expect(before).not.toBeNull();
 
   await openSettings(ana.page);
   const chosen = await pickOtherMic(ana.page);
-  test.skip(chosen === null, 'o navegador de teste expôs só um microfone: não há para quem trocar');
+  expect(chosen, 'o Chromium de teste deveria expor 2+ microfones falsos; sem isso a troca não é testada').not.toBeNull();
 
   await expect.poll(async () => (await latestAudio(ana.page))?.captures).toBeGreaterThan(before!.captures);
   const after = await latestAudio(ana.page);
@@ -141,11 +159,11 @@ test('trocar o microfone com ele ligado mantém ligado, para a própria Ana e pa
   await micButton(ana.page).click();
   await expect(micButton(ana.page)).toHaveAttribute('aria-pressed', 'true');
   await expect(tileOf(beto.page, 'Ana').locator('.tile-flag')).toHaveCount(0);
-  const before = await latestAudio(ana.page);
+  const before = await settledAudio(ana.page);
 
   await openSettings(ana.page);
   const chosen = await pickOtherMic(ana.page);
-  test.skip(chosen === null, 'o navegador de teste expôs só um microfone: não há para quem trocar');
+  expect(chosen, 'o Chromium de teste deveria expor 2+ microfones falsos; sem isso a troca não é testada').not.toBeNull();
 
   await expect.poll(async () => (await latestAudio(ana.page))?.captures).toBeGreaterThan(before!.captures);
   expect(await latestAudio(ana.page)).toMatchObject({ enabled: true, live: true, deviceId: chosen });
@@ -165,7 +183,7 @@ test('recarregar a página mantém o microfone escolhido (e volta a usá-lo)', a
   const { ana, beto } = await pair(browser, 'lembra');
   await openSettings(ana.page);
   const chosen = await pickOtherMic(ana.page);
-  test.skip(chosen === null, 'o navegador de teste expôs só um microfone: não há para quem trocar');
+  expect(chosen, 'o Chromium de teste deveria expor 2+ microfones falsos; sem isso a troca não é testada').not.toBeNull();
   const chosenLabel = (await micSelect(ana.page).locator('option:checked').textContent())!.trim();
 
   await ana.page.reload();
@@ -181,29 +199,29 @@ test('recarregar a página mantém o microfone escolhido (e volta a usá-lo)', a
   await beto.ctx.close();
 });
 
-test('escolher outra saída de áudio vale para o vídeo remoto e é lembrada', async ({ browser }) => {
+test('escolher outra saída de áudio vale para o som remoto e é lembrada', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'saida');
   await openSettings(ana.page);
   await expect(outputSelect(ana.page)).toBeEnabled(); // Chromium suporta setSinkId
   const current = await outputSelect(ana.page).inputValue();
   const other = (await optionValues(outputSelect(ana.page))).find((v) => v !== current);
-  test.skip(!other, 'o navegador de teste expôs só uma saída de áudio: não há para quem trocar');
+  expect(other, 'o Chromium de teste deveria expor 2+ saídas de áudio falsas; sem isso a troca não é testada').toBeTruthy();
 
   await outputSelect(ana.page).selectOption(other!);
   const chosenLabel = (await outputSelect(ana.page).locator('option:checked').textContent())!.trim();
   await dialog(ana.page).getByRole('button', { name: 'Fechar' }).click();
   await expect
-    .poll(() => tileOf(ana.page, 'Beto').locator('video').evaluate((v: HTMLVideoElement & { sinkId?: string }) => v.sinkId))
+    .poll(() => ana.page.locator('[data-testid^="audio-camera:"]').evaluate((a: HTMLAudioElement & { sinkId?: string }) => a.sinkId))
     .toBe(other);
 
   await ana.page.reload();
   await openSettings(ana.page);
   await expect(outputSelect(ana.page).locator('option:checked')).toHaveText(chosenLabel);
-  // e a saída escolhida vale de fato para o vídeo remoto depois de recarregar (os ids são novos, o sinkId acompanha a opção marcada)
+  // e a saída escolhida vale de fato para o som remoto (o <audio> do Beto) depois de recarregar (os ids são novos, o sinkId acompanha a opção marcada)
   const selectedId = await outputSelect(ana.page).inputValue();
   await dialog(ana.page).getByRole('button', { name: 'Fechar' }).click();
   await expect
-    .poll(() => tileOf(ana.page, 'Beto').locator('video').evaluate((v: HTMLVideoElement & { sinkId?: string }) => v.sinkId))
+    .poll(() => ana.page.locator('[data-testid^="audio-camera:"]').evaluate((a: HTMLAudioElement & { sinkId?: string }) => a.sinkId))
     .toBe(selectedId);
   expect(ana.errors).toEqual([]);
   await ana.ctx.close();

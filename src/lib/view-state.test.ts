@@ -180,6 +180,14 @@ describe('exibição', () => {
     expect(primaryTile(vis, s)?.id).toBe('camera:b');
   });
 
+  it('no destaque o tile grande é o primeiro que não é a própria câmera; sozinho, é a própria', () => {
+    const tiles = buildTiles([person('eu', { conn: 'self' }), person('b'), person('c')]);
+    const s = viewReducer(synced(tiles), { type: 'layout', layout: 'spotlight' });
+    expect(primaryTile(visibleTiles(tiles, s), s)?.id).toBe('camera:b');
+    const alone = buildTiles([person('eu', { conn: 'self' })]);
+    expect(primaryTile(visibleTiles(alone, synced(alone)), synced(alone))?.id).toBe('camera:eu');
+  });
+
   it('com um único tile visível, destaque e lateral viram grade (nada a separar)', () => {
     const tiles = buildTiles([person('a')]);
     const s = viewReducer(synced(tiles), { type: 'layout', layout: 'spotlight' });

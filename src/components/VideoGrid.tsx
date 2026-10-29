@@ -1,10 +1,11 @@
 'use client';
 
-import type { CSSProperties } from 'react';
+import { useCallback, useState, type CSSProperties } from 'react';
 import type { Participant, RemoteStreams } from '@/hooks/use-room';
 import type { ViewApi } from '@/hooks/use-view-state';
 import { effectiveLayout, orderedTiles, primaryTile, tileLabel, visibleTiles, type Tile } from '@/lib/view-state';
 import { Icon } from './Icon';
+import { RemoteAudio } from './RemoteAudio';
 import { VideoTile } from './VideoTile';
 
 type Props = {
@@ -20,13 +21,22 @@ type Props = {
 
 export function VideoGrid({ participants, remoteStreams, localCamera, localScreen, tiles, view, dispatch, sinkId }: Props) {
   const people = new Map(participants.map((p) => [p.id, p]));
+  // tiles cujo som o navegador bloqueou (precisa de um gesto); `retry` refaz o play() dentro do clique
+  const [blocked, setBlocked] = useState<string[]>([]);
+  const [retry, setRetry] = useState(0);
+  const onBlocked = useCallback(
+    (id: string, isBlocked: boolean) =>
+      setBlocked((list) => (isBlocked ? (list.includes(id) ? list : [...list, id]) : list.includes(id) ? list.filter((x) => x !== id) : list)),
+    [],
+  );
+
+  const streamOf = (t: Tile) =>
+    t.self ? (t.kind === 'screen' ? localScreen : localCamera) : (remoteStreams[t.peerId]?.[t.kind] ?? null);
 
   const render = (t: Tile) => {
     const p = people.get(t.peerId);
     if (!p) return null;
-    const stream = t.self
-      ? t.kind === 'screen' ? localScreen : localCamera
-      : (remoteStreams[t.peerId]?.[t.kind] ?? null);
+    const stream = streamOf(t);
     return (
       <VideoTile
         key={t.id}
@@ -40,7 +50,6 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
         conn={p.conn}
         muted={view.muted.includes(t.id)}
         maximized={view.maximized === t.id}
-        sinkId={sinkId}
         onToggleMuted={() => dispatch({ type: 'toggleMuted', id: t.id })}
         onHide={() => dispatch({ type: 'toggleHidden', id: t.id })}
         onToggleMaximize={() => dispatch({ type: 'maximize', id: t.id })}
@@ -54,7 +63,7 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
   const hidden = ordered.filter((t) => view.hidden.includes(t.id));
 
   const shown = maxTile ? [maxTile] : visible;
-  // o que não está no palco continua montado (o áudio não para), só fora da vista
+  // o que não está no palco continua montado, só fora da vista (o som não depende disso: ver RemoteAudio)
   const off = tiles.filter((t) => !shown.includes(t));
 
   let stage;
@@ -101,9 +110,30 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
           ))}
         </section>
       )}
+      {blocked.length > 0 && (
+        <button className="unblock" onClick={() => setRetry((n) => n + 1)}>
+          Clique para ativar o áudio
+        </button>
+      )}
       {stage}
       <div className="tiles-off" aria-hidden="true">
         {off.map(render)}
+      </div>
+      {/* um elemento de áudio por tile remoto, num lugar fixo: layout, ocultar e maximizar não o tocam */}
+      <div className="audio-sink" aria-hidden="true">
+        {tiles
+          .filter((t) => !t.self)
+          .map((t) => (
+            <RemoteAudio
+              key={t.id}
+              id={t.id}
+              stream={streamOf(t)}
+              muted={view.muted.includes(t.id)}
+              sinkId={sinkId}
+              retry={retry}
+              onBlocked={onBlocked}
+            />
+          ))}
       </div>
     </div>
   );

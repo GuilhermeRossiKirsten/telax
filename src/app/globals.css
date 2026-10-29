@@ -244,6 +244,7 @@ button.ghost:hover {
 /* grade de vídeos */
 
 .stage-tiles {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -259,7 +260,8 @@ button.ghost:hover {
   gap: 8px;
 }
 /* o que está fora do palco continua montado (o som não para) */
-.tiles-off {
+.tiles-off,
+.audio-sink {
   display: none;
 }
 
@@ -379,7 +381,7 @@ button.ghost:hover {
 .tile:focus-within .tile-actions {
   opacity: 1;
 }
-@media (hover: none) {
+@media (hover: none), (any-pointer: coarse) {
   .tile-actions {
     opacity: 1;
   }

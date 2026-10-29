@@ -243,22 +243,21 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
   await beto.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
   await expect(screen).toBeVisible();
-  const video = screen.locator('video');
-  // a tela de outra pessoa entra silenciada; o vídeo remoto carrega uma faixa de áudio própria (não é o microfone)
-  expect(await video.evaluate((v: HTMLVideoElement) => v.muted)).toBe(true);
-  await expect
-    .poll(() => video.evaluate((v: HTMLVideoElement) => (v.srcObject as MediaStream).getAudioTracks().length))
-    .toBe(1);
+  // o som da tela toca num <audio> próprio (o do tile da câmera é outro): começa silenciado
+  const sound = audioOf(beto.page, 'screen');
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(true);
   await expect(screen.locator('.tile-flag-local')).toBeVisible();
+  // e esse <audio> não é o do microfone da Ana: lá há só o microfone
+  await expect(audioOf(beto.page, 'camera')).toHaveCount(1);
 
   await screen.getByRole('button', { name: 'Ativar som de Tela de Ana' }).click();
-  expect(await video.evaluate((v: HTMLVideoElement) => v.muted)).toBe(false);
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.muted && !a.paused)).toBe(true);
 
   // o som que chega é o tom de verdade, não silêncio
-  const peak = await video.evaluate(async (v: HTMLVideoElement) => {
+  const peak = await sound.evaluate(async (a: HTMLAudioElement) => {
     const ac = new AudioContext();
     await ac.resume();
-    const src = ac.createMediaStreamSource(new MediaStream((v.srcObject as MediaStream).getAudioTracks()));
+    const src = ac.createMediaStreamSource(new MediaStream((a.srcObject as MediaStream).getAudioTracks()));
     const analyser = ac.createAnalyser();
     src.connect(analyser);
     const buf = new Float32Array(analyser.fftSize);
@@ -284,22 +283,36 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
 const playing = (tile: ReturnType<Page['locator']>) =>
   tile.locator('video').evaluate((v: HTMLVideoElement) => !v.paused && v.readyState >= 2);
 
+/** O som de cada tile remoto mora num <audio> fixo; testes abaixo o marcam para provar que nada o recria. */
+const audioOf = (p: Page, kind: 'camera' | 'screen') => p.locator(`[data-testid^="audio-${kind}:"]`);
+const markAudio = (a: ReturnType<Page['locator']>) =>
+  a.evaluate((el: HTMLAudioElement) => {
+    el.dataset.mark = 'mesmo-elemento';
+  });
+/** É o mesmo elemento de antes (nunca recriado), está tocando e com som. */
+const sameAudioStillPlaying = (a: ReturnType<Page['locator']>) =>
+  a.evaluate((el: HTMLAudioElement) => el.dataset.mark === 'mesmo-elemento' && !el.paused && !el.muted);
+
 test('ocultar tira a tela da grade, mantém o áudio tocando e "Mostrar" traz de volta', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'ocultar');
   await expectConnected(ana.page, 'Beto');
   const tile = tileOf(ana.page, 'Beto');
+  const sound = audioOf(ana.page, 'camera');
   await expect(tile).toBeVisible();
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
+  await markAudio(sound);
 
   await tile.getByRole('button', { name: 'Ocultar Beto' }).click();
   await expect(tile).toBeHidden();
-  // oculto não é desligado: o vídeo segue tocando (e com som, se não foi silenciado)
+  // oculto não é desligado: é o MESMO <audio>, ainda tocando e com som, e a imagem segue chegando
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
   await expect.poll(() => playing(tile)).toBe(true);
-  expect(await tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted)).toBe(false);
 
   await ana.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Beto' }).click();
   await expect(tile).toBeVisible();
   await expect(ana.page.getByRole('region', { name: 'Telas ocultas' })).toHaveCount(0);
   await expect.poll(() => playing(tile)).toBe(true);
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
 
   // nada mudou para o Beto: ele continua vendo a Ana
   await expect(tileOf(beto.page, 'Ana')).toBeVisible();
@@ -311,9 +324,12 @@ test('silenciar corta só o áudio daquela pessoa, neste navegador', async ({ br
   const { ana, beto } = await pair(browser, 'silenciar');
   await expectConnected(ana.page, 'Beto');
   const tile = tileOf(ana.page, 'Beto');
-  const muted = () => tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted);
+  // o som é do <audio> do tile; o <video> da imagem é sempre mudo
+  const sound = audioOf(ana.page, 'camera');
+  const muted = () => sound.evaluate((a: HTMLAudioElement) => a.muted);
 
-  expect(await muted()).toBe(false);
+  await expect.poll(muted).toBe(false);
+  expect(await tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted)).toBe(true);
   await tile.getByRole('button', { name: 'Silenciar Beto' }).click();
   await expect.poll(muted).toBe(true);
   await expect(tile.getByRole('button', { name: 'Ativar som de Beto' })).toBeVisible();
@@ -331,11 +347,15 @@ test('clicar na tela maximiza; Esc restaura; se a pessoa maximizada sai, a grade
   await expectConnected(ana.page, 'Beto');
   const tile = tileOf(ana.page, 'Beto');
   const mine = tileOf(ana.page, 'Ana');
+  const sound = audioOf(ana.page, 'camera');
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
+  await markAudio(sound);
 
   await tile.click({ position: { x: 24, y: 24 } });
   await expect(tile).toHaveAttribute('data-maximized', 'true');
   await expect(mine).toBeHidden();
   await expect.poll(() => playing(tile)).toBe(true);
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
 
   await ana.page.keyboard.press('Escape');
   await expect(tile).not.toHaveAttribute('data-maximized', 'true');
@@ -345,6 +365,7 @@ test('clicar na tela maximiza; Esc restaura; se a pessoa maximizada sai, a grade
   await expect(tile).toHaveAttribute('data-maximized', 'true');
   await tile.getByRole('button', { name: 'Restaurar Beto' }).click();
   await expect(mine).toBeVisible();
+  expect(await sameAudioStillPlaying(sound)).toBe(true); // nem maximizar nem restaurar recriam o som
 
   await tile.getByRole('button', { name: 'Maximizar Beto' }).click();
   await beto.page.close({ runBeforeUnload: true });
@@ -361,6 +382,9 @@ test('aba Telas: reordena, muda o layout e as colunas, e lembra a escolha ao rec
   const list = ana.page.getByTestId('tile-list');
   const cams = ana.page.locator('[data-testid="tiles"] figure[data-testid="tile-camera"]');
   await expect(cams.first()).toContainText('Ana');
+  const sound = audioOf(ana.page, 'camera');
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
+  await markAudio(sound);
 
   await list.getByRole('button', { name: 'Subir Beto' }).click();
   await expect(cams.first()).toContainText('Beto');
@@ -369,7 +393,12 @@ test('aba Telas: reordena, muda o layout e as colunas, e lembra a escolha ao rec
   const tiles = ana.page.getByTestId('tiles');
   await ana.page.getByLabel('Layout').selectOption('sidebar');
   await expect(tiles).toHaveAttribute('data-layout', 'sidebar');
+  await expect(ana.page.getByLabel('Colunas')).toBeDisabled(); // colunas só valem na grade
+  // trocar de layout move os tiles de lugar, mas o som (um <audio> fixo) segue o mesmo e sem cortes
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
   await ana.page.getByLabel('Layout').selectOption('grid');
+  await expect(ana.page.getByLabel('Colunas')).toBeEnabled();
+  expect(await sameAudioStillPlaying(sound)).toBe(true);
   await ana.page.getByLabel('Colunas').selectOption('2');
   await expect(tiles).toHaveAttribute('data-columns', '2');
 

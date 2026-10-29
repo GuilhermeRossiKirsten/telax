@@ -21,6 +21,10 @@
   border-radius: var(--radius-lg);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
+/* o foco entra no cartão (por código) quando não há campo habilitado: sem anel, é só um ponto de partida */
+.sd-card:focus {
+  outline: none;
+}
 
 .sd-title {
   margin: 0;

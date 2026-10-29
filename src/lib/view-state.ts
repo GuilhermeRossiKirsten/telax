@@ -136,8 +136,11 @@ export function effectiveLayout(visible: Tile[], state: ViewState): ShownLayout 
   return visible.length < 2 ? 'grid' : wanted;
 }
 
-/** O tile grande dos layouts destaque/lateral: no `auto`, a primeira tela visível; nos demais, o primeiro visível. */
+/**
+ * O tile grande dos layouts destaque/lateral: no `auto`, a primeira tela visível; nos demais, o primeiro
+ * visível que não seja a própria câmera (ninguém quer o próprio rosto grande por padrão).
+ */
 export function primaryTile(visible: Tile[], state: ViewState): Tile | undefined {
   if (state.layout === 'auto') return visible.find((t) => t.kind === 'screen') ?? visible[0];
-  return visible[0];
+  return visible.find((t) => !(t.self && t.kind === 'camera')) ?? visible[0];
 }

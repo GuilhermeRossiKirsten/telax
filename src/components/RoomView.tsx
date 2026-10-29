@@ -33,10 +33,11 @@ export function RoomView({ room, name }: { room: string; name: string }) {
     if (local.camera) void refreshDevices();
   }, [local.camera, refreshDevices]);
   const { micId, outputId } = devices;
-  const { selectMic } = local;
+  const { selectMic, camera: cameraStream } = local;
   useEffect(() => {
-    if (micId) void selectMic(micId);
-  }, [micId, selectMic]);
+    // roda de novo quando o stream da câmera aparece (a escolha salva só vale depois dele); selectMic ignora repetições
+    if (micId && cameraStream) void selectMic(micId);
+  }, [micId, cameraStream, selectMic]);
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('participants');

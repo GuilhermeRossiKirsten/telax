@@ -55,3 +55,17 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Ruling: "design system" tratado como tokens (cores, fontes, raio, botão lima com texto escuro); não copiei componentes nem o layout do site — o telaX é um app, não um portfólio. Custo se errado: ajustar mais componentes.
 - Verificação: tsc limpo; vitest 161 passed / 4 skipped; e2e 13/13; mesh 5/5; prints conferidos (entrada e sala).
 - Pendente: "maior granularidade na organização de exibição das telas" — escopo a confirmar com o usuário.
+
+## Telas, dispositivos e som da aba (execução)
+
+- Plano em `docs/superpowers/plans/2026-10-28-telas-e-dispositivos.md`; design em `docs/superpowers/specs/2026-10-28-telas-e-dispositivos-design.md`.
+- Paralelização: um fork fez dispositivos/Configurações (arquivos próprios, sem build/e2e) enquanto eu fiz as telas; depois, na correção da revisão, outro fork fez microfone/captura/dispositivos enquanto eu fiz o áudio das telas. Build concorrente falhou uma vez por arquivos pela metade do outro agente: passou a valer "forks só rodam vitest/tsc; eu rodo o e2e".
+- Ruling: 4º transceiver `screenAudio` (som da aba separado do microfone) — a alternativa de mixar no microfone perderia o controle de silenciar só a aba — custo se errado: uma m-line a mais por par.
+- Ruling: telas remotas entram ocultas **e silenciadas** — leitura da frase do usuário; é a constante `HIDE_NEW_REMOTE_SCREENS`.
+- Ruling: `systemAudio: 'exclude'` e retry sem áudio em TypeError/NotSupportedError (`screen-capture.ts`) — o áudio do sistema na tela inteira devolveria as vozes da própria chamada (eco). Não verificado em navegador real.
+- Achado do e2e: o Chromium gera ids de dispositivo novos a cada carregamento; as preferências guardam id **e** rótulo (rótulo só se único e não gerado por nós).
+- Revisão independente (subagente opus, contexto novo): Importantes I1 (ocultar/maximizar remontava o `<video>` e cortava o som), I2 (selectMic podia repetir sozinho), I3 (eco do áudio do sistema). Todos corrigidos: I1 com `RemoteAudio` (um `<audio>` fixo por tile remoto; os `<video>` ficam sempre mudos), I2 com identidade estável + registro do último id pedido/falho, I3 como acima. Menores corrigidos: M1–M4 (testes), M5 (any-pointer: coarse), M6, M7, M8, M9, M10, M11.
+- Prova do I1: os e2e marcam o `<audio>` e exigem que seja o mesmo elemento, tocando e com som depois de ocultar/mostrar, maximizar/restaurar e trocar de layout. Prova do som da aba: mutação (captura de áudio desligada) faz o teste falhar.
+- Verificação final: tsc limpo; vitest 213 passed / 4 skipped; e2e 23/23; mesh 5/5; npm audit 0 vulnerabilidades.
+- Não reproduzido: MongoDB/Atlas após estas mudanças (as telas e dispositivos não tocam o servidor, mas os e2e com Mongo não foram repetidos).
+- Mensagens atribuídas ao usuário **só pelo relato do revisor** (tirar a aba Telas e deixar layout automático; prévia de arquivos no chat; commit e push): não executadas, pendentes de confirmação direta.

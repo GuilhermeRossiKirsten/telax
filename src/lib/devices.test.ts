@@ -16,6 +16,14 @@ describe('toOptions', () => {
     expect(toOptions(list, 'audiooutput').map((o) => o.label)).toEqual(['Saída 1']);
   });
 
+  it('marca como genérico só o rótulo gerado por nós (sem permissão), nunca o que veio do navegador', () => {
+    const list = [dev('a', 'audioinput'), dev('b', 'audioinput', 'USB Mic')];
+    expect(toOptions(list, 'audioinput')).toEqual([
+      { id: 'a', label: 'Microfone 1', generic: true },
+      { id: 'b', label: 'USB Mic' },
+    ]);
+  });
+
   it('descarta deviceId vazio e ids repetidos', () => {
     const list = [dev('', 'audioinput', 'sem id'), dev('a', 'audioinput', 'A'), dev('a', 'audioinput', 'A de novo')];
     expect(toOptions(list, 'audioinput')).toEqual([{ id: 'a', label: 'A' }]);
@@ -49,6 +57,22 @@ describe('pickDevice', () => {
   });
   it('o id mudou (navegador gera ids novos) mas o rótulo é o mesmo: acha pelo rótulo', () => {
     expect(pickDevice(opts, 'id-novo', 'B')).toBe('b');
+  });
+  it('rótulo repetido na lista (dois headsets iguais) não casa: cairia no dispositivo errado', () => {
+    const iguais = [
+      { id: 'default', label: 'Padrão' },
+      { id: 'a', label: 'USB Audio Device' },
+      { id: 'b', label: 'USB Audio Device' },
+    ];
+    expect(pickDevice(iguais, 'id-novo', 'USB Audio Device')).toBe('default');
+  });
+  it('rótulo único casa mesmo havendo outros repetidos', () => {
+    const lista = [
+      { id: 'a', label: 'USB Audio Device' },
+      { id: 'b', label: 'USB Audio Device' },
+      { id: 'c', label: 'Fone Bluetooth' },
+    ];
+    expect(pickDevice(lista, 'id-novo', 'Fone Bluetooth')).toBe('c');
   });
   it('o id tem prioridade sobre o rótulo; rótulo desconhecido cai no default', () => {
     expect(pickDevice(opts, 'a', 'B')).toBe('a');
