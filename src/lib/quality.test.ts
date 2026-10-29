@@ -33,9 +33,18 @@ describe('sanitizeQuality', () => {
     expect(mixed.camera).toEqual(DEFAULT_QUALITY.camera);
     expect(mixed.screen).toEqual({ ...DEFAULT_QUALITY.screen, resolution: '1080p', fps: 30, priority: 'detail' });
   });
+  it('systemAudio: só booleano vale; lixo vira false; salvo antigo sem o campo continua válido', () => {
+    expect(sanitizeQuality({ screen: { systemAudio: true } }).screen.systemAudio).toBe(true);
+    expect(sanitizeQuality({ screen: { systemAudio: false } }).screen.systemAudio).toBe(false);
+    for (const junk of ['true', 1, 0, null, {}, []]) {
+      expect(sanitizeQuality({ screen: { systemAudio: junk } }).screen.systemAudio).toBe(false);
+    }
+    const old = { camera: DEFAULT_QUALITY.camera, screen: { resolution: '720p', fps: 30, bitrateKbps: 1000, priority: 'motion' } };
+    expect(sanitizeQuality(old).screen).toEqual({ resolution: '720p', fps: 30, bitrateKbps: 1000, priority: 'motion', systemAudio: false });
+  });
   it('o padrão é tudo automático', () => {
     expect(DEFAULT_QUALITY.camera).toMatchObject({ resolution: 'auto', fps: 0, bitrateKbps: 0 });
-    expect(DEFAULT_QUALITY.screen).toMatchObject({ resolution: 'auto', fps: 0, bitrateKbps: 0, priority: 'balanced' });
+    expect(DEFAULT_QUALITY.screen).toMatchObject({ resolution: 'auto', fps: 0, bitrateKbps: 0, priority: 'balanced', systemAudio: false });
   });
 });
 

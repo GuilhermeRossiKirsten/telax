@@ -12,6 +12,26 @@ describe('captureScreen', () => {
     expect(get).toHaveBeenCalledWith({ video: true, audio: true, systemAudio: 'exclude' });
   });
 
+  it('com a opção ligada, pede também o áudio do sistema (tela inteira)', async () => {
+    const get = vi.fn().mockResolvedValue(stream);
+    await captureScreen(get, { systemAudio: true });
+    expect(get).toHaveBeenCalledWith({ video: true, audio: true, systemAudio: 'include' });
+  });
+
+  it('opção desligada ou ausente continua pedindo exclude', async () => {
+    const get = vi.fn().mockResolvedValue(stream);
+    await captureScreen(get, { systemAudio: false });
+    await captureScreen(get, {});
+    expect(get).toHaveBeenNthCalledWith(1, { video: true, audio: true, systemAudio: 'exclude' });
+    expect(get).toHaveBeenNthCalledWith(2, { video: true, audio: true, systemAudio: 'exclude' });
+  });
+
+  it('com a opção ligada, o retry em TypeError também cai para só vídeo', async () => {
+    const get = vi.fn().mockRejectedValueOnce(failure('TypeError')).mockResolvedValueOnce(stream);
+    await expect(captureScreen(get, { systemAudio: true })).resolves.toBe(stream);
+    expect(get).toHaveBeenLastCalledWith({ video: true, audio: false });
+  });
+
   it.each(['TypeError', 'NotSupportedError'])('se o navegador não aceita as opções (%s), tenta de novo só com vídeo', async (name) => {
     const get = vi.fn().mockRejectedValueOnce(failure(name)).mockResolvedValueOnce(stream);
     await expect(captureScreen(get)).resolves.toBe(stream);

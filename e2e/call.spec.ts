@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 
 /** Só para teste: registra as RTCPeerConnection criadas pela página para podermos inspecioná-las. */
 const TRACK_PCS = () => {
@@ -73,6 +73,23 @@ async function goLive(...users: User[]) {
 
 const participants = (p: Page) => p.getByTestId('participants').locator('li');
 const tileOf = (p: Page, name: string) => p.locator('figure[data-testid="tile"]', { hasText: name });
+
+/**
+ * Menu do tile (botão direito ou "Mais opções"): `role="menu"` num portal em document.body, por isso fica FORA do
+ * locator do tile. Todo controle de áudio (voz e som da transmissão) mora aqui, nunca no overlay de hover.
+ */
+const menuOf = (p: Page, label: string) => p.getByRole('menu', { name: `Menu de ${label}` });
+/** Abre o menu com o botão direito num ponto livre do tile (longe do overlay do topo e do botão "Ver tela"). */
+async function openMenu(p: Page, tile: Locator, label: string) {
+  await tile.click({ button: 'right', position: { x: 12, y: 80 } });
+  const menu = menuOf(p, label);
+  await expect(menu).toBeVisible();
+  return menu;
+}
+async function closeMenu(p: Page, label: string) {
+  await p.keyboard.press('Escape');
+  await expect(menuOf(p, label)).toHaveCount(0);
+}
 
 async function expectConnected(p: Page, other: string) {
   await expect(participants(p).filter({ hasText: other }).locator('.badge')).toHaveText('Conectado');
@@ -332,11 +349,15 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(true);
   // e esse <audio> não é o do microfone da Ana: a voz tem o seu
   await expect(audioOf(beto.page, 'camera')).toHaveCount(1);
-  await tile.hover();
-  await expect(tile.getByRole('button', { name: 'Ativar som da aba de Ana' })).toBeVisible();
+  // o controle do som da aba mora no menu (botão direito), no grupo "Som da transmissão", separado da "Voz"
+  const menu = await openMenu(beto.page, tile, 'Ana');
+  const transmission = menu.getByRole('group', { name: 'Som da transmissão de Ana' });
+  await expect(transmission.getByRole('button', { name: 'Ativar som da aba de Ana' })).toBeVisible();
 
-  await tile.getByRole('button', { name: 'Ativar som da aba de Ana' }).click();
+  await transmission.getByRole('button', { name: 'Ativar som da aba de Ana' }).click();
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.muted && !a.paused)).toBe(true);
+  await expect(menu).toBeVisible(); // silenciar/ativar não fecha o menu
+  await closeMenu(beto.page, 'Ana');
 
   // o som que chega é o tom de verdade, não silêncio
   const peak = await sound.evaluate(async (a: HTMLAudioElement) => {
@@ -416,14 +437,27 @@ test('silenciar corta só o áudio daquela pessoa, neste navegador', async ({ br
 
   await expect.poll(muted).toBe(false);
   expect(await tile.locator('video').evaluate((v: HTMLVideoElement) => v.muted)).toBe(true);
-  await tile.getByRole('button', { name: 'Silenciar Beto' }).click();
-  await expect.poll(muted).toBe(true);
-  await expect(tile.getByRole('button', { name: 'Ativar som de Beto' })).toBeVisible();
-  // a própria câmera não oferece "silenciar"
-  await expect(tileOf(ana.page, 'Ana').getByRole('button', { name: /Silenciar/ })).toHaveCount(0);
 
-  await tile.getByRole('button', { name: 'Ativar som de Beto' }).click();
+  // o controle da voz mora no menu (botão direito), no grupo "Voz de Beto"
+  const menu = await openMenu(ana.page, tile, 'Beto');
+  const vozDeBeto = menu.getByRole('group', { name: 'Voz de Beto' });
+  await vozDeBeto.getByRole('button', { name: 'Silenciar Beto' }).click();
+  await expect.poll(muted).toBe(true);
+  await expect(vozDeBeto.getByRole('button', { name: 'Ativar som de Beto' })).toBeVisible();
+  await expect(menu).toBeVisible(); // silenciar não fecha o menu
+  // o selo no tile diz que VOCÊ silenciou a pessoa (diferente do selo do microfone dela e do chip da aba)
+  await expect(tile.locator('[title="Você silenciou esta pessoa"]')).toBeVisible();
+
+  await vozDeBeto.getByRole('button', { name: 'Ativar som de Beto' }).click();
   await expect.poll(muted).toBe(false);
+  await expect(tile.locator('[title="Você silenciou esta pessoa"]')).toHaveCount(0);
+  await closeMenu(ana.page, 'Beto');
+
+  // a própria câmera não oferece "silenciar": o menu dela não tem grupo de voz nem botão de silenciar
+  const own = await openMenu(ana.page, tileOf(ana.page, 'Ana'), 'Ana (você)');
+  await expect(own.getByRole('group')).toHaveCount(0);
+  await expect(own.getByRole('button', { name: /Silenciar|Ativar som/ })).toHaveCount(0);
+  await closeMenu(ana.page, 'Ana (você)');
   await ana.ctx.close();
   await beto.ctx.close();
 });
@@ -503,7 +537,7 @@ test('o botão de maximizar põe o tile em tela cheia de verdade e dá para sair
   await beto.ctx.close();
 });
 
-test('o painel não tem a aba Telas; o overlay da tela controla volume, silenciar e fechar', async ({ browser }) => {
+test('o painel não tem a aba Telas; o overlay NÃO tem áudio e o menu (botão direito) controla volume e silenciar', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'overlay');
   await expectConnected(ana.page, 'Beto');
   await expect(ana.page.getByRole('tab', { name: 'Telas' })).toHaveCount(0);
@@ -511,25 +545,37 @@ test('o painel não tem a aba Telas; o overlay da tela controla volume, silencia
 
   const tile = tileOf(ana.page, 'Beto');
   const sound = audioOf(ana.page, 'camera');
-  const slider = tile.getByRole('slider', { name: 'Volume de Beto' });
   const volume = () => sound.evaluate((a: HTMLAudioElement) => a.volume);
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
   await markAudio(sound);
 
-  await tile.hover(); // o overlay aparece ao passar o mouse
-  await expect(slider).toBeVisible();
+  // (a) o overlay de hover só tem as ações do tile: nenhum slider e nenhum botão de som (o menu é um portal, fora do tile)
+  await tile.hover();
+  await expect(tile.getByRole('button', { name: 'Destacar Beto' })).toBeVisible();
+  await expect(tile.getByRole('button', { name: 'Tela cheia Beto' })).toBeVisible();
+  await expect(tile.getByRole('button', { name: 'Fechar Beto' })).toBeVisible();
+  await expect(tile.getByRole('button', { name: 'Mais opções de Beto' })).toBeVisible();
+  await expect(tile.getByRole('slider')).toHaveCount(0);
+  await expect(tile.getByRole('button', { name: /Silenciar|Ativar som/ })).toHaveCount(0);
+
+  // o volume e o silenciar vivem no menu, no grupo "Voz de Beto"
+  const menu = await openMenu(ana.page, tile, 'Beto');
+  const voz = menu.getByRole('group', { name: 'Voz de Beto' });
+  const slider = voz.getByRole('slider', { name: 'Volume de Beto' });
   await slider.fill('30');
   await expect.poll(volume).toBeCloseTo(0.3, 2);
+  await expect(menu).toBeVisible(); // ajustar o volume não fecha o menu
 
   // silenciar e voltar a mexer no volume volta a ouvir
-  await tile.getByRole('button', { name: 'Silenciar Beto' }).click();
+  await voz.getByRole('button', { name: 'Silenciar Beto' }).click();
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(true);
   await expect(slider).toHaveValue('0');
   await slider.fill('60');
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(false);
   await expect.poll(volume).toBeCloseTo(0.6, 2);
+  await closeMenu(ana.page, 'Beto');
 
-  // o overlay não dispara a seleção, e o volume é só deste navegador
+  // o menu não dispara a seleção, e o volume é só deste navegador
   await expect(tile).not.toHaveAttribute('data-selected', 'true');
   expect(await beto.page.locator('[data-testid^="audio-camera:"]').evaluate((a: HTMLAudioElement) => a.volume)).toBe(1);
 
@@ -541,6 +587,250 @@ test('o painel não tem a aba Telas; o overlay da tela controla volume, silencia
   expect(await volume()).toBeCloseTo(0.6, 2);
   await ana.ctx.close();
   await beto.ctx.close();
+});
+
+test('botão direito abre o menu certo de cada tipo de tile (voz, som da transmissão, próprio tile)', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'menu-tipos');
+  await expectConnected(ana.page, 'Beto');
+
+  // tile de câmera de outra pessoa: só a voz; nenhum grupo de transmissão
+  const betoTile = tileOf(ana.page, 'Beto');
+  let menu = await openMenu(ana.page, betoTile, 'Beto');
+  await expect(menu.getByRole('group', { name: 'Voz de Beto' })).toBeVisible();
+  await expect(menu.getByRole('group', { name: /Som da transmissão/ })).toHaveCount(0);
+  for (const item of ['Destacar Beto', 'Tela cheia Beto', 'Fechar Beto']) {
+    await expect(menu.getByRole('menuitem', { name: item, exact: true })).toBeVisible();
+  }
+  await expect(menu.getByRole('menuitem', { name: /Ver tela|Fechar tela/ })).toHaveCount(0);
+  await closeMenu(ana.page, 'Beto');
+
+  // o próprio tile: nenhum grupo de áudio (não se ouve a si mesmo), só as ações
+  menu = await openMenu(ana.page, tileOf(ana.page, 'Ana'), 'Ana (você)');
+  await expect(menu.getByRole('group')).toHaveCount(0);
+  for (const item of ['Destacar Ana (você)', 'Tela cheia Ana (você)', 'Fechar Ana (você)']) {
+    await expect(menu.getByRole('menuitem', { name: item, exact: true })).toBeVisible();
+  }
+  await closeMenu(ana.page, 'Ana (você)');
+
+  // Beto passa a compartilhar: no tile dele, na página da Ana, aparecem os DOIS grupos, distintos
+  await shareButton(beto.page).click();
+  await expect(betoTile).toHaveAttribute('data-sharing', 'true');
+  menu = await openMenu(ana.page, betoTile, 'Beto');
+  await expect(menu.getByRole('group', { name: 'Voz de Beto' })).toBeVisible();
+  const transmission = menu.getByRole('group', { name: 'Som da transmissão de Beto' });
+  await expect(transmission).toBeVisible();
+  await expect(menu.getByRole('group', { name: 'Voz de Beto' }).getByText('Voz de Beto')).toBeVisible();
+  await expect(transmission.getByText('Som da transmissão')).toBeVisible();
+  await expect(transmission.getByText('Abra a tela para ouvir')).toBeVisible(); // a tela começa fechada
+  // os controles existem e funcionam mesmo com a tela fechada
+  await expect(transmission.getByRole('button', { name: 'Ativar som da aba de Beto' })).toBeVisible();
+  await expect(transmission.getByRole('slider', { name: 'Volume da aba de Beto' })).toBeVisible();
+  // e o item de ação oferece abrir a tela
+  await expect(menu.getByRole('menuitem', { name: 'Fechar tela de Beto', exact: true })).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: 'Ver tela de Beto', exact: true }).click();
+  await expect(menuOf(ana.page, 'Beto')).toHaveCount(0); // acionar um item de ação fecha o menu
+  await expect(betoTile).toHaveAttribute('data-showing', 'screen');
+
+  // com a tela aberta: sem a nota, e o item vira "Fechar tela"
+  menu = await openMenu(ana.page, betoTile, 'Beto');
+  await expect(menu.getByText('Abra a tela para ouvir')).toHaveCount(0);
+  await expect(menu.getByRole('menuitem', { name: 'Ver tela de Beto', exact: true })).toHaveCount(0);
+  await expect(menu.getByRole('menuitem', { name: 'Fechar tela de Beto', exact: true })).toBeVisible();
+  await closeMenu(ana.page, 'Beto');
+
+  // quem compartilha vê, no próprio tile, "Parar de compartilhar" e nenhum grupo de áudio
+  menu = await openMenu(beto.page, tileOf(beto.page, 'Beto'), 'Beto (você)');
+  await expect(menu.getByRole('group')).toHaveCount(0);
+  await expect(menu.getByRole('menuitem', { name: 'Parar de compartilhar tela', exact: true })).toBeVisible();
+  await closeMenu(beto.page, 'Beto (você)');
+
+  expect(ana.errors).toEqual([]);
+  expect(beto.errors).toEqual([]);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('o botão "Mais opções" do overlay abre o MESMO menu do botão direito', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'menu-mais');
+  await expectConnected(ana.page, 'Beto');
+  const tile = tileOf(ana.page, 'Beto');
+
+  await tile.hover();
+  await tile.getByRole('button', { name: 'Mais opções de Beto' }).click();
+  const menu = menuOf(ana.page, 'Beto');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('group', { name: 'Voz de Beto' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Destacar Beto', exact: true })).toBeVisible();
+  const viaButton = await menu.getByRole('menuitem').allInnerTexts();
+  expect(viaButton.length).toBeGreaterThanOrEqual(3); // destacar, tela cheia, fechar
+  await closeMenu(ana.page, 'Beto');
+
+  // o mesmo conteúdo que o botão direito mostra
+  const viaRightClick = await openMenu(ana.page, tile, 'Beto');
+  await expect(viaRightClick.getByRole('group', { name: 'Voz de Beto' })).toBeVisible();
+  expect(await viaRightClick.getByRole('menuitem').allInnerTexts()).toEqual(viaButton);
+  await closeMenu(ana.page, 'Beto');
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('menu: Esc e clique fora fecham, ajustar volume não fecha, e só mexe na fonte do tile escolhido', async ({ browser }) => {
+  const room = uniqueRoom('menu-fecha');
+  const ana = await newUser(browser);
+  const beto = await newUser(browser);
+  const cris = await newUser(browser);
+  await enter(ana, room, 'Ana');
+  await enter(beto, room, 'Beto');
+  await enter(cris, room, 'Cris');
+  await expectConnected(ana.page, 'Beto');
+  await expectConnected(ana.page, 'Cris');
+  const voices = audioOf(ana.page, 'camera');
+  await expect(voices).toHaveCount(2);
+  const volumes = () => voices.evaluateAll((els) => (els as HTMLAudioElement[]).map((a) => Math.round(a.volume * 100)).sort((x, y) => x - y));
+  const betoTile = tileOf(ana.page, 'Beto');
+
+  // ajustar o volume NÃO fecha o menu e só mexe na voz do Beto (a da Cris continua em 100)
+  const menu = await openMenu(ana.page, betoTile, 'Beto');
+  await menu.getByRole('slider', { name: 'Volume de Beto' }).fill('30');
+  await expect.poll(volumes).toEqual([30, 100]);
+  await expect(menu).toBeVisible();
+
+  // Esc fecha
+  await closeMenu(ana.page, 'Beto');
+  await expect.poll(volumes).toEqual([30, 100]); // fechar não desfaz nada
+
+  // clique fora fecha
+  const again = await openMenu(ana.page, betoTile, 'Beto');
+  await ana.page.locator('.topbar').click({ position: { x: 5, y: 5 } });
+  await expect(again).toHaveCount(0);
+
+  // acionar um item de ação fecha o menu e age (aqui: destacar)
+  const third = await openMenu(ana.page, betoTile, 'Beto');
+  await third.getByRole('menuitem', { name: 'Destacar Beto', exact: true }).click();
+  await expect(menuOf(ana.page, 'Beto')).toHaveCount(0);
+  await expect(betoTile).toHaveAttribute('data-selected', 'true');
+
+  // é só deste navegador: nas páginas dos outros nada mudou
+  for (const other of [beto, cris]) {
+    const vols = await audioOf(other.page, 'camera').evaluateAll((els) => (els as HTMLAudioElement[]).map((a) => Math.round(a.volume * 100)));
+    expect(vols.every((v) => v === 100)).toBe(true);
+  }
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+  await beto.ctx.close();
+  await cris.ctx.close();
+});
+
+test('"Fechar tela de ..." no menu fecha a tela, mantém o tile e para o som da aba', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'menu-fechartela');
+  await expectConnected(beto.page, 'Ana');
+  await shareButton(ana.page).click();
+  const tile = tileOf(beto.page, 'Ana');
+  await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+  const sound = beto.page.locator('[data-testid^="audio-screen:"]');
+  await expect(sound).toHaveCount(1);
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.srcObject !== null)).toBe(true);
+
+  const menu = await openMenu(beto.page, tile, 'Ana');
+  await menu.getByRole('menuitem', { name: 'Fechar tela de Ana', exact: true }).click();
+  await expect(menuOf(beto.page, 'Ana')).toHaveCount(0); // item de ação fecha o menu
+  await expect(tile).toHaveAttribute('data-showing', 'camera');
+  await expect(tile).toHaveAttribute('data-sharing', 'true'); // ela segue compartilhando; só deixei de ver
+  await expect(tile.locator('.avatar')).toBeVisible();
+  await expect(tile.getByRole('button', { name: 'Ver tela de Ana' })).toBeVisible();
+  await expect(tilesOf(beto.page)).toHaveCount(2);
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.srcObject === null)).toBe(true); // o som da aba parou
+  await expect(beto.page.getByRole('region', { name: 'Telas fechadas' })).toHaveCount(0);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('distinção visual: o selo da voz silenciada e o chip "aba sem som" são independentes', async ({ browser }) => {
+  const room = uniqueRoom('selos');
+  const ana = await newUser(browser);
+  const beto = await newUser(browser);
+  await ana.ctx.addInitScript(FAKE_TAB_WITH_AUDIO);
+  await enter(ana, room, 'Ana');
+  await enter(beto, room, 'Beto');
+  await expectConnected(beto.page, 'Ana');
+  await shareButton(ana.page).click();
+  const tile = tileOf(beto.page, 'Ana');
+  await tile.getByRole('button', { name: 'Ver tela de Ana' }).click();
+  await expect(tile).toHaveAttribute('data-showing', 'screen');
+
+  const chip = tile.locator('.tile-flag-tab');
+  const vozSilenciada = tile.locator('[title="Você silenciou esta pessoa"]');
+  // a tela de outra pessoa abre com o som da aba silenciado: o chip diz isso em TEXTO; a voz não está silenciada
+  await expect(chip).toHaveText('aba sem som');
+  await expect(chip).toHaveClass(/tile-flag-local/);
+  await expect(vozSilenciada).toHaveCount(0);
+
+  const menu = await openMenu(beto.page, tile, 'Ana');
+  const transmission = menu.getByRole('group', { name: 'Som da transmissão de Ana' });
+  const voz = menu.getByRole('group', { name: 'Voz de Ana' });
+
+  // ativar o som da transmissão tira o chip e NÃO mexe no selo de voz
+  await transmission.getByRole('button', { name: 'Ativar som da aba de Ana' }).click();
+  await expect(chip).toHaveCount(0);
+  await expect(vozSilenciada).toHaveCount(0);
+
+  // silenciar a voz mostra o selo de voz e NÃO traz o chip de volta
+  await voz.getByRole('button', { name: 'Silenciar Ana' }).click();
+  await expect(vozSilenciada).toBeVisible();
+  await expect(chip).toHaveCount(0);
+
+  // e silenciar a transmissão de novo mostra o chip, com o selo de voz ainda lá: os dois coexistem, distintos
+  await transmission.getByRole('button', { name: 'Silenciar som da aba de Ana' }).click();
+  await expect(chip).toHaveText('aba sem som');
+  await expect(vozSilenciada).toBeVisible();
+  await expect(vozSilenciada).not.toHaveText('aba sem som'); // o selo de voz é ícone, não o chip de texto
+
+  // ativar a voz tira só o selo de voz
+  await voz.getByRole('button', { name: 'Ativar som de Ana' }).click();
+  await expect(vozSilenciada).toHaveCount(0);
+  await expect(chip).toHaveText('aba sem som');
+  await closeMenu(beto.page, 'Ana');
+  expect(beto.errors).toEqual([]);
+  await ana.ctx.close();
+  await beto.ctx.close();
+});
+
+test('painel Participantes: nome longo fica em UMA linha (nunca letra por letra) e o volume vai para a segunda linha', async ({ browser }) => {
+  const room = uniqueRoom('nome-longo');
+  const ana = await newUser(browser);
+  const longo = await newUser(browser);
+  const nome = 'Cristiano Ronaldo dos Santos Aveiro'; // 35 letras: bem maior que o espaço da coluna do nome
+  await enter(ana, room, 'Ana');
+  await enter(longo, room, nome);
+  await expectConnected(ana.page, 'Cristiano');
+
+  const row = participants(ana.page).filter({ hasText: 'Cristiano' });
+  const name = row.locator('.grow').first();
+  const m = await name.evaluate((el: HTMLElement) => {
+    const cs = getComputedStyle(el);
+    return { height: el.getBoundingClientRect().height, fontSize: parseFloat(cs.fontSize), whiteSpace: cs.whiteSpace, textOverflow: cs.textOverflow };
+  });
+  // uma linha: menos que o dobro do tamanho da fonte (escrito na vertical daria várias linhas)
+  expect(m.height).toBeLessThan(m.fontSize * 2);
+  expect(m.whiteSpace).toBe('nowrap');
+  expect(m.textOverflow).toBe('ellipsis');
+  // o nome continua inteiro no DOM (a reticência é só visual)
+  await expect(name).toContainText(nome);
+
+  // o controle de volume fica numa segunda linha: começa abaixo do nome, não ao lado dele
+  const volume = row.locator('.row-volume');
+  await expect(volume.getByRole('slider', { name: `Volume de ${nome}` })).toBeVisible();
+  const nameBox = (await name.boundingBox())!;
+  const volumeBox = (await volume.boundingBox())!;
+  expect(volumeBox.y).toBeGreaterThanOrEqual(nameBox.y + nameBox.height - 1);
+
+  // um nome curto na mesma lista também fica em uma linha
+  const curta = participants(ana.page).filter({ hasText: 'Ana' }).locator('.grow').first();
+  expect(await curta.evaluate((el: HTMLElement) => el.getBoundingClientRect().height < parseFloat(getComputedStyle(el).fontSize) * 2)).toBe(true);
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+  await longo.ctx.close();
 });
 
 test('chat chega nos dois sentidos com o nome certo', async ({ browser }) => {

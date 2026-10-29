@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import type { ConnState } from '@/lib/peer-manager';
-import { screenLabel, screenSound, screenWord } from '@/lib/screens';
+import { screenLabel, screenWord } from '@/lib/screens';
 import type { TileKind } from '@/lib/view-state';
 import { Icon } from './Icon';
+import { TileMenu } from './TileMenu';
 
 export const CONN_LABEL: Record<ConnState | 'self', string> = {
   self: 'Você',
@@ -34,7 +35,7 @@ type Props = {
   /** o tile está mostrando a tela (no lugar do avatar/câmera) */
   showScreen?: boolean;
   selected?: boolean;
-  /** voz e som da aba: silenciar e volume só neste navegador (o som toca no RemoteAudio) */
+  /** voz e som da transmissão: silenciar e volume só neste navegador (o som toca no RemoteAudio); controlados no menu */
   voice: Sound;
   tab: Sound;
   onToggleVoice?(): void;
@@ -52,38 +53,10 @@ type Props = {
 
 const hasVideoTrack = (s: MediaStream | null) => !!s && s.getVideoTracks().length > 0;
 
-function SoundControl(p: {
-  muteLabel: string;
-  unmuteLabel: string;
-  volumeLabel: string;
-  title: string;
-  sound: Sound;
-  onToggle?(): void;
-  onVolume?(v: number): void;
-  stop(fn?: () => void): (e: MouseEvent) => void;
-}) {
-  const { sound } = p;
-  return (
-    <div className="tile-volume">
-      <button className="tile-btn" aria-label={sound.muted ? p.unmuteLabel : p.muteLabel} title={p.title} onClick={p.stop(p.onToggle)}>
-        <Icon name={sound.muted || sound.volume === 0 ? 'volumeOff' : 'volume'} size={16} />
-      </button>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        step={5}
-        value={Math.round((sound.muted ? 0 : sound.volume) * 100)}
-        aria-label={p.volumeLabel}
-        onChange={(e) => p.onVolume?.(Number(e.target.value) / 100)}
-      />
-    </div>
-  );
-}
-
 /**
  * Um tile por participante. Compartilhando, a tela substitui o avatar/câmera neste mesmo tile (mesmo <video>);
  * se a câmera está ligada, ela passa a um quadro pequeno no canto. Telas adicionais têm tiles próprios.
+ * O áudio (voz e som da transmissão) é controlado no menu de botão direito, não no overlay.
  */
 export function VideoTile({
   kind,
@@ -156,6 +129,13 @@ export function VideoTile({
     else void el.requestFullscreen?.().catch(() => {}); // sem suporte ou negado: o botão só não faz nada
   };
 
+  // menu de botão direito (ou do botão "Mais opções"); em tela cheia só o próprio elemento aparece, então o menu vai nele
+  const [menu, setMenu] = useState<{ x: number; y: number; host: HTMLElement } | null>(null);
+  const openMenu = (x: number, y: number) => {
+    const full = document.fullscreenElement;
+    setMenu({ x, y, host: full instanceof HTMLElement ? full : document.body });
+  };
+
   const stop = (fn?: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     fn?.();
@@ -175,6 +155,11 @@ export function VideoTile({
       data-sharing={sharing ? 'true' : undefined}
       data-showing={showScreen ? 'screen' : 'camera'}
       onClick={onToggleSelect}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openMenu(e.clientX, e.clientY);
+      }}
     >
       <video
         ref={mainRef}
@@ -200,32 +185,9 @@ export function VideoTile({
           <Icon name="screen" size={16} /> Ver {word}
         </button>
       )}
-      {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona */}
+      {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona.
+          O áudio (voz e som da transmissão) fica no menu: botão direito ou "Mais opções" */}
       <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
-        {!isSelf && isPerson && (
-          <SoundControl
-            muteLabel={`Silenciar ${name}`}
-            unmuteLabel={`Ativar som de ${name}`}
-            volumeLabel={`Volume de ${name}`}
-            title={voice.muted ? 'Voltar a ouvir (só para você)' : 'Silenciar (só para você)'}
-            sound={voice}
-            onToggle={onToggleVoice}
-            onVolume={onVoiceVolume}
-            stop={stop}
-          />
-        )}
-        {!isSelf && showScreen && (
-          <SoundControl
-            muteLabel={`Silenciar ${screenSound(name, slot ?? 0)}`}
-            unmuteLabel={`Ativar ${screenSound(name, slot ?? 0)}`}
-            volumeLabel={`Volume ${screenSound(name, slot ?? 0).replace(/^som /, '')}`}
-            title={tab.muted ? 'Ouvir o som da aba (só para você)' : 'Silenciar o som da aba (só para você)'}
-            sound={tab}
-            onToggle={onToggleTab}
-            onVolume={onTabVolume}
-            stop={stop}
-          />
-        )}
         <button
           className="tile-btn"
           aria-pressed={selected}
@@ -257,6 +219,20 @@ export function VideoTile({
             <Icon name="close" size={16} />
           </button>
         )}
+        <button
+          className="tile-btn"
+          aria-haspopup="menu"
+          aria-expanded={menu !== null}
+          aria-label={`Mais opções de ${label}`}
+          title="Mais opções: volume da voz, som da transmissão e outras (ou botão direito)"
+          onClick={(e) => {
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            openMenu(r.left, r.bottom + 4);
+          }}
+        >
+          <Icon name="more" size={16} />
+        </button>
       </div>
       <figcaption>
         <span className="tile-name">{caption}</span>
@@ -271,8 +247,8 @@ export function VideoTile({
           </span>
         )}
         {showScreen && !isSelf && tab.muted && (
-          <span className="tile-flag tile-flag-local" title="O som da aba está silenciado">
-            <Icon name="volumeOff" size={14} />
+          <span className="tile-flag tile-flag-local tile-flag-tab" title="Você silenciou o som da transmissão">
+            aba sem som
           </span>
         )}
         {!isSelf && isPerson && (
@@ -281,6 +257,34 @@ export function VideoTile({
           </span>
         )}
       </figcaption>
+      {menu && (
+        <TileMenu
+          x={menu.x}
+          y={menu.y}
+          host={menu.host}
+          label={label}
+          name={name}
+          isSelf={isSelf}
+          isPerson={isPerson}
+          slot={slot}
+          showScreen={showScreen}
+          selected={selected}
+          fullscreen={fullscreen}
+          voice={voice}
+          tab={tab}
+          onToggleVoice={onToggleVoice}
+          onVoiceVolume={onVoiceVolume}
+          onToggleTab={onToggleTab}
+          onTabVolume={onTabVolume}
+          onOpenScreen={onOpenScreen}
+          onCloseScreen={onCloseScreen}
+          onStopShare={onStopShare}
+          onHide={onHide}
+          onToggleSelect={onToggleSelect}
+          onToggleFullscreen={toggleFullscreen}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </figure>
   );
 }

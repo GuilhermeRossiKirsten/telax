@@ -241,7 +241,9 @@ export function useLocalMedia() {
     const slot = screensRef.current.findIndex((x) => x === null);
     if (slot < 0) return;
     try {
-      const stream = await captureScreen((o) => navigator.mediaDevices.getDisplayMedia(o));
+      const stream = await captureScreen((o) => navigator.mediaDevices.getDisplayMedia(o), {
+        systemAudio: qualityRef.current.screen.systemAudio,
+      });
       // o botão "parar compartilhamento" do navegador encerra o track por fora do nosso botão
       stream.getVideoTracks()[0].addEventListener('ended', () => {
         if (screensRef.current[slot] === stream) stopScreen(slot);

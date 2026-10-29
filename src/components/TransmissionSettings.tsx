@@ -45,6 +45,7 @@ const formatMbps = (kbps: number) => (kbps >= 1000 ? `${(kbps / 1000).toFixed(1)
 /** Seção "Transmissão" das Configurações: qualidade do que EU envio. Vale na hora e é lembrada. */
 export function TransmissionSettings({ api, inUse, participants, sharing }: Props) {
   const { quality: q } = api;
+  const sysAudioId = useId();
   const upload = estimateUploadKbps(q, participants, sharing);
   const isDefault = JSON.stringify(q) === JSON.stringify(DEFAULT_QUALITY);
 
@@ -69,6 +70,20 @@ export function TransmissionSettings({ api, inUse, participants, sharing }: Prop
       <Select label="Taxa de bits máxima da tela" value={q.screen.bitrateKbps} options={SCREEN_OPTIONS.bitrateKbps} onChange={(bitrateKbps) => api.setScreen({ bitrateKbps })} />
       <Select label="Prioridade da tela" value={q.screen.priority} options={SCREEN_OPTIONS.priority} onChange={(priority) => api.setScreen({ priority })} />
       {sharing && inUse.screen && <p className="sd-note" data-testid="in-use-screen">Em uso agora: {inUse.screen}</p>}
+      <div className="sd-check">
+        <input
+          id={sysAudioId}
+          type="checkbox"
+          checked={q.screen.systemAudio}
+          onChange={(e) => api.setScreen({ systemAudio: e.target.checked })}
+        />
+        <label htmlFor={sysAudioId}>Incluir o áudio do sistema ao compartilhar a tela inteira</label>
+      </div>
+      <p className="sd-note" data-testid="system-audio-help">
+        Vale para a próxima tela que você compartilhar{sharing ? ' (as que já estão abertas não mudam)' : ''}. O navegador só oferece o áudio do
+        sistema ao compartilhar a tela inteira (Chrome/Edge no Windows); em abas o som da aba já vai. Atenção: o áudio do sistema
+        inclui as vozes da chamada, então use fone para ninguém se ouvir (eco).
+      </p>
 
       <p className="sd-note" data-testid="upload-estimate">
         {upload === undefined

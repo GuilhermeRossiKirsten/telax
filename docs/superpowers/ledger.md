@@ -101,3 +101,17 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Verificação final: tsc limpo; vitest 275 passed / 4 skipped; e2e 43/43; mesh 5/5; npm audit 0.
 - Não verificado: Mongo com `screenSlots` (store alterado só por leitura, teste pulado sem MONGODB_TEST_URI); 8 m-lines no SDP real do Chrome além do Chromium de teste; captura real de várias abas; Atlas/Vercel.
 - Ainda pendentes (só pelo relato do revisor, não do usuário): prévia de arquivos no chat; commit e push.
+
+## Menu de botão direito, nomes na vertical, áudio do sistema
+
+- Bug reproduzido por print antes de corrigir: na aba Participantes a barra de volume (acrescentada por mim) espremia o nome, que quebrava letra por letra. Corrigido (nome em uma linha com reticências; volume em segunda linha).
+- O áudio saiu do overlay: voz e som da transmissão tinham o mesmo ícone. Agora vivem no menu de botão direito, em grupos rotulados (microfone / tela) e o tile ganha o chip "aba sem som".
+- "Tela inteira sem áudio" era decisão minha anterior (`systemAudio: exclude`, contra eco). Virou opção do usuário (padrão desligado, com aviso de eco). Ruling: padrão desligado — ligar por padrão faria quem não pediu se ouvir; custo: o usuário precisa ligar uma vez.
+- Paralelização: fork B (opção de áudio do sistema: quality/screen-capture/use-local-media/TransmissionSettings/e2e), fork C (reescrita dos e2e para o menu), eu (TileMenu, VideoTile, CSS). Sem colisão de arquivos.
+
+## Parar qual tela
+
+- Pedido: com mais de uma transmissão, escolher qual parar. `Parar compartilhamento` deixou de parar tudo quando há >1 tela: abre `ScreenStopMenu` com miniatura ao vivo de cada tela + "Parar todas as telas". e2e `stop-screens.spec.ts` (3 testes) visto falhar antes nos casos de várias telas (o de uma tela já passava: comportamento preservado) e passar depois, inclusive a distinção das miniaturas por cor.
+- Efeito colateral esperado: 2 testes antigos de `multi-screen.spec.ts` clicavam em "Parar compartilhamento" com 2–3 telas esperando parar todas; passaram a escolher "Parar todas as telas".
+- Verificação final: tsc limpo; vitest 279 passed / 4 skipped; e2e 55/55; mesh 5/5; npm audit 0; print do seletor conferido.
+- Ainda não verificado: captura real de várias abas/telas no Chrome, 8 m-lines no SDP real, Mongo com screenSlots, Atlas/Vercel, áudio do sistema real. Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.

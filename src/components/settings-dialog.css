@@ -146,3 +146,22 @@
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+
+.sd-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.sd-check input[type='checkbox'] {
+  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.sd-check label {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}

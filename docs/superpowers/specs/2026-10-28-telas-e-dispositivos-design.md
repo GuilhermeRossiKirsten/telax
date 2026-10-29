@@ -86,3 +86,16 @@ Uma pessoa pode compartilhar até `MAX_SCREENS = 3` telas ao mesmo tempo (`src/l
 - Barra de controles: botão `Tela` ADICIONA uma tela (abre o seletor do navegador); `aria-pressed` = está compartilhando; desabilitado com `title` explicando ao chegar em 3. Quando há alguma tela, aparece também o botão `Parar compartilhamento` que para TODAS.
 - Participantes (painel): o ícone de tela mostra a quantidade quando > 1; cada linha de outra pessoa tem o mesmo controle de voz do overlay: botão `Silenciar {nome}`/`Ativar som de {nome}` e slider `Volume de {nome}` (os do painel ficam dentro de `[data-testid="participants"]`).
 - Layout: destaque quando há tile selecionado ou algum tile visível mostrando tela.
+
+## Menu de botão direito e áudio do sistema (pedido posterior)
+
+- O overlay de hover **perde todo controle de áudio** (o ícone de som no overlay não deixava distinguir a voz da pessoa do som da transmissão). Fica com: fixar, tela cheia, parar de compartilhar (própria tela), fechar e **Mais opções**.
+- Botão direito no tile (ou "Mais opções") abre `role="menu"` em portal (no próprio elemento quando em tela cheia): grupo **Voz de {nome}** (microfone) e grupo **Som da transmissão** (tela; `Som da transmissão 2` etc.), cada um com silenciar e volume; ajustar volume não fecha; ações (destacar, tela cheia, ver/fechar tela, parar de compartilhar, fechar) fecham. Esc/clique fora/resize fecham; setas navegam.
+- Tile com som da transmissão silenciado mostra o chip "aba sem som" (a voz silenciada segue sendo o ícone).
+- Aba Participantes: o nome é uma linha com reticências e o volume fica numa segunda linha da própria linha (antes a barra espremia o nome e ele quebrava letra por letra).
+- **Áudio do sistema ao compartilhar a tela inteira:** opção em Configurações → Transmissão ("Incluir o áudio do sistema ao compartilhar a tela inteira"), desligada por padrão (o áudio do sistema inclui as vozes da chamada: eco sem fone), lembrada no navegador; a captura pede `systemAudio: 'include'` quando ligada e `'exclude'` quando desligada.
+
+## Parar qual tela (pedido posterior)
+
+- O botão **Parar compartilhamento** da barra: com **uma** tela, para direto; com **mais de uma**, abre o menu "Parar qual tela?" (acima do botão, em portal) com um item por tela, cada um com **miniatura ao vivo** da tela (é assim que se reconhece qual é qual) e o texto "Parar tela"/"Parar tela 2"/"Parar tela 3", mais "Parar todas as telas". Esc, clique fora e resize fecham sem parar nada; setas navegam.
+- Parar uma tela não mexe nas outras (slots fixos); se a de menor slot para, a seguinte assume o tile da pessoa.

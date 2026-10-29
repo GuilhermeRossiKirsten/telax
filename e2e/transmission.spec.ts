@@ -185,3 +185,94 @@ test('tela: prioridade vira contentHint e taxa/fps viram limites do sender da te
   await ana.ctx.close();
   await beto.ctx.close();
 });
+
+/** Só para teste: registra as opções que o app passa ao getDisplayMedia e devolve um vídeo animado (com áudio só se pedido). */
+const RECORD_DISPLAY_OPTIONS = () => {
+  const w = window as unknown as { __displayOptions: Array<Record<string, unknown>> };
+  w.__displayOptions = [];
+  navigator.mediaDevices.getDisplayMedia = async (options) => {
+    w.__displayOptions.push({ ...(options as Record<string, unknown>) });
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 360;
+    const g = canvas.getContext('2d')!;
+    let n = 0;
+    setInterval(() => {
+      g.fillStyle = `hsl(${(n += 7) % 360} 80% 50%)`;
+      g.fillRect(0, 0, 640, 360);
+    }, 50);
+    const tracks = canvas.captureStream(15).getVideoTracks();
+    if (options?.audio) {
+      const ac = new AudioContext();
+      void ac.resume();
+      const osc = ac.createOscillator();
+      const dest = ac.createMediaStreamDestination();
+      osc.connect(dest);
+      osc.start();
+      tracks.push(...dest.stream.getAudioTracks());
+    }
+    return new MediaStream(tracks);
+  };
+};
+
+const SYSTEM_AUDIO = 'Incluir o áudio do sistema ao compartilhar a tela inteira';
+const displayCalls = (p: Page) =>
+  p.evaluate(() => (window as unknown as { __displayOptions: Array<Record<string, unknown>> }).__displayOptions);
+
+async function soloWithDisplayStub(browser: Browser, label: string) {
+  const ana = await newUser(browser);
+  await ana.ctx.addInitScript(RECORD_DISPLAY_OPTIONS);
+  await enter(ana, uniqueRoom(label), 'Ana');
+  await expect(ana.page.getByRole('navigation', { name: 'Controles da reunião' })).toBeVisible();
+  return ana;
+}
+
+test('áudio do sistema: a caixa vem desmarcada e a captura pede o áudio do sistema EXCLUÍDO (evita eco)', async ({ browser }) => {
+  const ana = await soloWithDisplayStub(browser, 'sys-padrao');
+  await openSettings(ana.page);
+  const box = dialog(ana.page).getByLabel(SYSTEM_AUDIO, { exact: true });
+  await expect(box).not.toBeChecked();
+  await expect(ana.page.getByTestId('system-audio-help')).toContainText('eco');
+  await closeSettings(ana.page);
+
+  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
+  await expect.poll(async () => (await displayCalls(ana.page)).length).toBe(1);
+  expect((await displayCalls(ana.page))[0]).toMatchObject({ video: true, audio: true, systemAudio: 'exclude' });
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+});
+
+test('áudio do sistema: marcar a caixa faz a próxima captura pedir "include" com áudio', async ({ browser }) => {
+  const ana = await soloWithDisplayStub(browser, 'sys-ligado');
+  await openSettings(ana.page);
+  await dialog(ana.page).getByLabel(SYSTEM_AUDIO, { exact: true }).check();
+  await closeSettings(ana.page);
+
+  await ana.page.getByRole('button', { name: 'Tela', exact: true }).click();
+  await expect.poll(async () => (await displayCalls(ana.page)).length).toBe(1);
+  expect((await displayCalls(ana.page))[0]).toMatchObject({ video: true, audio: true, systemAudio: 'include' });
+  // com a tela já aberta, a janela avisa que a mudança só vale para a próxima
+  await openSettings(ana.page);
+  await expect(ana.page.getByTestId('system-audio-help')).toContainText('já estão abertas não mudam');
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+});
+
+test('áudio do sistema: a escolha é lembrada ao recarregar e "Restaurar automático" desmarca', async ({ browser }) => {
+  const ana = await soloWithDisplayStub(browser, 'sys-lembra');
+  await openSettings(ana.page);
+  await dialog(ana.page).getByLabel(SYSTEM_AUDIO, { exact: true }).check();
+  await expect(dialog(ana.page).getByRole('button', { name: 'Restaurar automático' })).toBeEnabled(); // só a caixa já difere do padrão
+  await closeSettings(ana.page);
+
+  await ana.page.reload();
+  await expect(ana.page.getByRole('navigation', { name: 'Controles da reunião' })).toBeVisible();
+  await openSettings(ana.page);
+  await expect(dialog(ana.page).getByLabel(SYSTEM_AUDIO, { exact: true })).toBeChecked();
+
+  await dialog(ana.page).getByRole('button', { name: 'Restaurar automático' }).click();
+  await expect(dialog(ana.page).getByLabel(SYSTEM_AUDIO, { exact: true })).not.toBeChecked();
+  await expect(dialog(ana.page).getByRole('button', { name: 'Restaurar automático' })).toBeDisabled();
+  expect(ana.errors).toEqual([]);
+  await ana.ctx.close();
+});

@@ -826,3 +826,172 @@ html {
   scrollbar-width: thin;
   scrollbar-color: rgba(232, 232, 227, 0.28) transparent;
 }
+
+/* aba Participantes: o nome nunca quebra letra por letra; o volume vai para uma segunda linha da própria linha */
+ul[data-testid='participants'] li {
+  flex-wrap: wrap;
+}
+ul[data-testid='participants'] li .grow {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+ul[data-testid='participants'] .row-volume {
+  order: 10;
+  flex: 1 0 100%;
+  padding-left: 36px; /* alinhado ao nome, depois do avatar */
+}
+ul[data-testid='participants'] .row-volume input[type='range'] {
+  flex: 1;
+  width: auto;
+}
+
+/* selo "aba sem som" no tile: um texto, para não confundir com o ícone da voz silenciada */
+.tile-flag.tile-flag-tab {
+  width: auto;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* menu de botão direito do tile: voz e som da transmissão em grupos separados e rotulados */
+.tile-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 270px;
+  max-width: min(320px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+}
+.tile-menu-title {
+  padding: 4px 8px 6px;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.tile-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface-2);
+  border-radius: 10px;
+}
+.tile-menu-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.tile-menu-sound {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tile-menu-sound input[type='range'] {
+  flex: 1;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.tile-menu-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+.tile-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+.tile-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+.tile-menu-item:hover,
+.tile-menu-item:focus-visible {
+  background: var(--accent-soft);
+}
+
+/* seletor de "qual tela parar": miniatura ao vivo de cada tela compartilhada */
+.stop-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+}
+.stop-menu-title {
+  padding: 4px 8px 6px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stop-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+.stop-menu-item:hover,
+.stop-menu-item:focus-visible {
+  background: var(--accent-soft);
+}
+.stop-menu-preview {
+  flex: none;
+  width: 96px;
+  height: 54px;
+  object-fit: contain;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.stop-menu-all {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  color: var(--danger);
+}

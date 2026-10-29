@@ -5,13 +5,20 @@ export type ScreenResolution = 'auto' | '720p' | '1080p';
 export type ScreenPriority = 'balanced' | 'motion' | 'detail';
 
 export type CameraQuality = { resolution: CameraResolution; fps: number; bitrateKbps: number };
-export type ScreenQuality = { resolution: ScreenResolution; fps: number; bitrateKbps: number; priority: ScreenPriority };
+export type ScreenQuality = {
+  resolution: ScreenResolution;
+  fps: number;
+  bitrateKbps: number;
+  priority: ScreenPriority;
+  /** incluir o áudio do sistema na tela inteira (traz as vozes da chamada: use fone); vale para a próxima tela */
+  systemAudio: boolean;
+};
 export type QualitySettings = { camera: CameraQuality; screen: ScreenQuality };
 
 /** 0 em `fps` e `bitrateKbps` significa automático. */
 export const DEFAULT_QUALITY: QualitySettings = {
   camera: { resolution: 'auto', fps: 0, bitrateKbps: 0 },
-  screen: { resolution: 'auto', fps: 0, bitrateKbps: 0, priority: 'balanced' },
+  screen: { resolution: 'auto', fps: 0, bitrateKbps: 0, priority: 'balanced', systemAudio: false },
 };
 
 type Option<T> = { value: T; label: string };
@@ -94,6 +101,7 @@ export function sanitizeQuality(raw: unknown): QualitySettings {
       fps: pick(SCREEN_OPTIONS.fps, scr.fps, d.screen.fps),
       bitrateKbps: pick(SCREEN_OPTIONS.bitrateKbps, scr.bitrateKbps, d.screen.bitrateKbps),
       priority: pick(SCREEN_OPTIONS.priority, scr.priority, d.screen.priority),
+      systemAudio: scr.systemAudio === true,
     },
   };
 }

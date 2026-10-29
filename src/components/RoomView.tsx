@@ -203,6 +203,8 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         onCam={local.toggleCam}
         onScreen={local.addScreen}
         onStopScreens={local.stopAllScreens}
+        onStopScreen={local.stopScreen}
+        screens={local.screens}
         onPanel={() => setPanelOpen((o) => !o)}
         onSettings={() => setSettingsOpen(true)}
         onRestart={restart}

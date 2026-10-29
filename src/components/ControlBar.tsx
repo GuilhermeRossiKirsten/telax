@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { Icon, type IconName } from './Icon';
+import { ScreenStopMenu } from './ScreenStopMenu';
 
 type Props = {
   micOn: boolean;
@@ -19,7 +21,12 @@ type Props = {
   onCam(): void;
   /** adiciona uma tela (o navegador abre o seletor) */
   onScreen(): void;
+  /** para todas as telas compartilhadas */
   onStopScreens(): void;
+  /** para só a tela de um slot */
+  onStopScreen(slot: number): void;
+  /** telas próprias por slot (null = livre), para as miniaturas do seletor */
+  screens: Array<MediaStream | null>;
   onPanel(): void;
   onSettings(): void;
   onRestart(): void;
@@ -53,6 +60,8 @@ function Btn(props: {
 }
 
 export function ControlBar(p: Props) {
+  // com mais de uma tela, "Parar compartilhamento" pergunta qual parar; com uma só, para direto
+  const [stopAnchor, setStopAnchor] = useState<DOMRect | null>(null);
   return (
     <nav className="controls" aria-label="Controles da reunião">
       <Btn
@@ -87,7 +96,22 @@ export function ControlBar(p: Props) {
         }
         onClick={p.onScreen}
       />
-      {p.sharing && <Btn icon="screenOff" label="Parar compartilhamento" title="Parar todas as telas que você compartilha" onClick={p.onStopScreens} />}
+      {p.sharing && (
+        <button
+          className="ctl"
+          aria-label="Parar compartilhamento"
+          aria-haspopup={p.screenCount > 1 ? 'menu' : undefined}
+          aria-expanded={p.screenCount > 1 ? stopAnchor !== null : undefined}
+          title={p.screenCount > 1 ? 'Escolher qual tela parar (ou todas)' : 'Parar de compartilhar a tela'}
+          onClick={(e) => (p.screenCount > 1 ? setStopAnchor(e.currentTarget.getBoundingClientRect()) : p.onStopScreens())}
+        >
+          <Icon name="screenOff" />
+          <span className="ctl-text">Parar compartilhamento</span>
+        </button>
+      )}
+      {stopAnchor && p.screenCount > 1 && (
+        <ScreenStopMenu anchor={stopAnchor} screens={p.screens} onStop={p.onStopScreen} onStopAll={p.onStopScreens} onClose={() => setStopAnchor(null)} />
+      )}
       <Btn icon="panel" label="Painel" pressed={p.panelOpen} title="Mostrar ou ocultar o painel lateral" onClick={p.onPanel} />
       <Btn icon="settings" label="Configurações" title="Escolher microfone e saída de áudio" onClick={p.onSettings} />
       <Btn
