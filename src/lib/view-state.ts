@@ -26,8 +26,8 @@ export type ViewState = {
   muted: string[];
   /** volume de 0 a 1 por chave de áudio; sem entrada vale 1 */
   volume: Record<string, number>;
-  /** o tile em destaque: fica grande e os demais ficam embaixo */
-  selected: string | null;
+  /** tiles selecionados (clique no tile): formam, juntos, a grade principal; os demais ficam na faixa embaixo */
+  selected: string[];
   /** telas de outras pessoas que o usuário abriu (ids `peer#slot`) */
   screens: string[];
   /** telas sendo compartilhadas agora (ids `peer#slot`), para detectar um novo compartilhamento */
@@ -75,7 +75,7 @@ export function buildTiles(participants: ReadonlyArray<PersonInput>): Tile[] {
   return tiles;
 }
 
-export const initialView = (): ViewState => ({ order: [], hidden: [], muted: [], volume: {}, selected: null, screens: [], sharing: [] });
+export const initialView = (): ViewState => ({ order: [], hidden: [], muted: [], volume: {}, selected: [], screens: [], sharing: [] });
 
 export const volumeOf = (state: ViewState, key: string) => state.volume[key] ?? 1;
 
@@ -118,7 +118,7 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
         ...(START_REMOTE_SCREENS_OFF ? freshRemote.map(screenKey) : []),
       ];
       const keptVolume = Object.keys(state.volume).filter(alivekey);
-      const selected = state.selected && alive.has(state.selected) ? state.selected : null;
+      const selected = state.selected.filter((id) => alive.has(id));
       if (
         sameList(order, state.order) &&
         sameList(hidden, state.hidden) &&
@@ -126,7 +126,7 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
         sameList(screens, state.screens) &&
         sameList(sharing, state.sharing) &&
         keptVolume.length === Object.keys(state.volume).length &&
-        selected === state.selected
+        sameList(selected, state.selected)
       ) {
         return state;
       }
@@ -135,17 +135,18 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
     }
     case 'toggleHidden': {
       if (!state.order.includes(action.id)) return state;
-      return { ...state, hidden: toggle(state.hidden, action.id), selected: state.selected === action.id ? null : state.selected };
+      return { ...state, hidden: toggle(state.hidden, action.id), selected: state.selected.filter((id) => id !== action.id) };
     }
     case 'toggleMuted': {
       const peers = new Set(state.order.filter((id) => !id.includes('#')));
       return keyAlive(action.key, peers, state.sharing) ? { ...state, muted: toggle(state.muted, action.key) } : state;
     }
     case 'select': {
-      if (action.id === null) return state.selected === null ? state : { ...state, selected: null };
+      // seleção múltipla e independente: clicar alterna só aquele tile; null limpa tudo
+      if (action.id === null) return state.selected.length === 0 ? state : { ...state, selected: [] };
       if (!state.order.includes(action.id)) return state;
-      if (state.selected === action.id) return { ...state, selected: null };
-      return { ...state, selected: action.id, hidden: state.hidden.filter((id) => id !== action.id) };
+      if (state.selected.includes(action.id)) return { ...state, selected: state.selected.filter((id) => id !== action.id) };
+      return { ...state, selected: [...state.selected, action.id], hidden: state.hidden.filter((id) => id !== action.id) };
     }
     case 'volume': {
       const peers = new Set(state.order.filter((id) => !id.includes('#')));
@@ -175,15 +176,23 @@ export function orderedTiles(tiles: Tile[], state: ViewState): Tile[] {
 export const visibleTiles = (tiles: Tile[], state: ViewState): Tile[] =>
   orderedTiles(tiles, state).filter((t) => !state.hidden.includes(t.id));
 
-/** O tile grande do destaque: o selecionado; senão o primeiro que está mostrando uma tela. */
-export function primaryTile(visible: Tile[], state: ViewState): Tile | undefined {
-  return visible.find((t) => t.id === state.selected) ?? visible.find((t) => showsScreen(t, state));
+/**
+ * Os tiles do palco (a grade principal): os selecionados; sem seleção, os que estão mostrando uma tela
+ * (aberta, ou a própria). Vazio = não há palco, só a grade normal. Mantém a ordem dos tiles, não a dos cliques.
+ */
+export function stageTiles(visible: Tile[], state: ViewState): Tile[] {
+  const picked = visible.filter((t) => state.selected.includes(t.id));
+  return picked.length > 0 ? picked : visible.filter((t) => showsScreen(t, state));
 }
 
-/** Destaque quando há um selecionado ou uma tela aberta (com ao menos 2 tiles); senão, grade. */
+/** Destaque quando há palco e ainda sobram tiles para a faixa; se o palco é tudo (ou não há palco), grade normal. */
 export function effectiveLayout(visible: Tile[], state: ViewState): Layout {
-  return visible.length >= 2 && primaryTile(visible, state) ? 'spotlight' : 'grid';
+  const stage = stageTiles(visible, state);
+  return stage.length > 0 && stage.length < visible.length ? 'spotlight' : 'grid';
 }
+
+/** Colunas da grade do palco: raiz quadrada arredondada para cima (1→1, 2→2, 3–4→2, 5–9→3). */
+export const stageColumns = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 
 /** Ajusta o volume de uma fonte de áudio; mexer em quem está silenciado volta a ouvir. */
 export function applyVolume(state: ViewState, dispatch: (a: ViewAction) => void, key: string, volume: number) {

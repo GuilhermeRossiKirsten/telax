@@ -99,3 +99,15 @@ Uma pessoa pode compartilhar até `MAX_SCREENS = 3` telas ao mesmo tempo (`src/l
 
 - O botão **Parar compartilhamento** da barra: com **uma** tela, para direto; com **mais de uma**, abre o menu "Parar qual tela?" (acima do botão, em portal) com um item por tela, cada um com **miniatura ao vivo** da tela (é assim que se reconhece qual é qual) e o texto "Parar tela"/"Parar tela 2"/"Parar tela 3", mais "Parar todas as telas". Esc, clique fora e resize fecham sem parar nada; setas navegam.
 - Parar uma tela não mexe nas outras (slots fixos); se a de menor slot para, a seguinte assume o tile da pessoa.
+
+## Seleção múltipla em grade, sem botão de pin (pedido posterior)
+
+- O botão de pin saiu do overlay; a seleção é o clique no corpo do tile e aparece só como **contorno** (borda + brilho na cor de destaque). O menu de botão direito mantém "Destacar/Soltar {rótulo}" (acessibilidade por teclado).
+- `ViewState.selected` agora é uma lista: clicar alterna só aquele tile, `select null` (Esc) limpa tudo, esconder um tile o tira da seleção, quem sai da sala some dela.
+- Palco = tiles selecionados; sem seleção, os que mostram tela (aberta ou própria). Com palco menor que o total de tiles visíveis: `data-layout="spotlight"` com o palco em GRADE (`.tiles-primary`, `--cols` = ceil(sqrt(N))) e os demais na faixa `.tiles-rest`; senão `grid` normal.
+
+## Eventos de controle não podem ser cortados por sinais (bug real, achado por teste instável)
+
+- O log de eventos da sala guarda no máximo `MAX_EVENTS = 500`. Com 4+ pessoas, os sinais (SDP/ICE, e agora 8 faixas por par) lotam o log em segundos; o corte "mais velhos primeiro" apagava os `join` de quem ainda não tinha consultado, e essa pessoa nunca mais via aqueles participantes (cursor já avançado).
+- Política nova (memória e Mongo): ao estourar o limite, saem primeiro os **sinais** mais velhos; entrada, saída, estado, chat e restart só saem se, sem nenhum sinal, ainda exceder. Teste de contrato novo nos dois armazenamentos.
+- Não resolvido: o cliente avança o cursor mesmo quando o servidor cortou eventos (não detecta lacuna). Com a política nova isso só ocorre se houver mais de 500 eventos de controle.

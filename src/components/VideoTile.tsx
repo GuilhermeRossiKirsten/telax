@@ -185,18 +185,9 @@ export function VideoTile({
           <Icon name="screen" size={16} /> Ver {word}
         </button>
       )}
-      {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona.
-          O áudio (voz e som da transmissão) fica no menu: botão direito ou "Mais opções" */}
+      {/* overlay sobre a imagem: aparece ao passar o mouse ou focar. A seleção é o clique no corpo do tile (só o contorno
+          indica); o áudio (voz e som da transmissão) fica no menu: botão direito ou "Mais opções" */}
       <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
-        <button
-          className="tile-btn"
-          aria-pressed={selected}
-          aria-label={selected ? `Soltar ${label}` : `Destacar ${label}`}
-          title={selected ? 'Voltar ao layout normal' : 'Destacar: fica grande e os outros ficam embaixo'}
-          onClick={stop(onToggleSelect)}
-        >
-          <Icon name="pin" size={16} />
-        </button>
         <button
           className="tile-btn"
           aria-label={fullscreen ? `Sair da tela cheia ${label}` : `Tela cheia ${label}`}

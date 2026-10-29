@@ -486,13 +486,21 @@ test('clicar numa tela a seleciona: fica grande e os outros ficam embaixo; Esc s
   await expect(tile).not.toHaveAttribute('data-selected', 'true');
   await expect(tiles).toHaveAttribute('data-layout', 'grid');
 
-  await tile.getByRole('button', { name: 'Destacar Beto' }).click();
+  // sem botão de pin no overlay: a seleção também sai pelo item do menu de botão direito
+  await tile.hover();
+  await expect(tile.getByRole('button', { name: /Destacar|Soltar/ })).toHaveCount(0);
+  let menu = await openMenu(ana.page, tile, 'Beto');
+  await menu.getByRole('menuitem', { name: 'Destacar Beto', exact: true }).click();
   await expect(tile).toHaveAttribute('data-selected', 'true');
-  await tile.getByRole('button', { name: 'Soltar Beto' }).click();
+  menu = await openMenu(ana.page, tile, 'Beto');
+  await menu.getByRole('menuitem', { name: 'Soltar Beto', exact: true }).click();
+  await expect(tile).not.toHaveAttribute('data-selected', 'true');
   await expect(tiles).toHaveAttribute('data-layout', 'grid');
   expect(await sameAudioStillPlaying(sound)).toBe(true); // nem selecionar nem soltar recriam o som
 
-  await tile.getByRole('button', { name: 'Destacar Beto' }).click();
+  menu = await openMenu(ana.page, tile, 'Beto');
+  await menu.getByRole('menuitem', { name: 'Destacar Beto', exact: true }).click();
+  await expect(tile).toHaveAttribute('data-selected', 'true');
   await beto.page.close({ runBeforeUnload: true });
   await expect(tile).toHaveCount(0, { timeout: 25_000 });
   await expect(mine).toBeVisible(); // nada de destaque vazio
@@ -524,7 +532,7 @@ test('o botão de maximizar põe o tile em tela cheia de verdade e dá para sair
   await expect.poll(() => tile.locator('video').evaluate((v: HTMLVideoElement) => !v.paused)).toBe(true);
   // em tela cheia os controles continuam ali (agora para sair) e o som segue o mesmo
   expect(await sameAudioStillPlaying(sound)).toBe(true);
-  // maximizar não mexe na seleção: quem seleciona é o clique no tile ou o botão de destacar
+  // maximizar não mexe na seleção: quem seleciona é o clique no tile ou o item "Destacar" do menu
   await expect(tile).not.toHaveAttribute('data-selected', 'true');
 
   await tile.hover();
@@ -551,7 +559,7 @@ test('o painel não tem a aba Telas; o overlay NÃO tem áudio e o menu (botão 
 
   // (a) o overlay de hover só tem as ações do tile: nenhum slider e nenhum botão de som (o menu é um portal, fora do tile)
   await tile.hover();
-  await expect(tile.getByRole('button', { name: 'Destacar Beto' })).toBeVisible();
+  await expect(tile.getByRole('button', { name: /Destacar|Soltar/ })).toHaveCount(0); // sem botão de pin: a seleção é o clique no tile
   await expect(tile.getByRole('button', { name: 'Tela cheia Beto' })).toBeVisible();
   await expect(tile.getByRole('button', { name: 'Fechar Beto' })).toBeVisible();
   await expect(tile.getByRole('button', { name: 'Mais opções de Beto' })).toBeVisible();

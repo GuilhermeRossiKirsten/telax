@@ -5,7 +5,8 @@ import {
   effectiveLayout,
   initialView,
   orderedTiles,
-  primaryTile,
+  stageColumns,
+  stageTiles,
   screenIdOf,
   screenKey,
   showsScreen,
@@ -145,7 +146,7 @@ describe('sync', () => {
     s = viewReducer(s, { type: 'volume', key: 'screen:b#1', volume: 0.2 });
     s = viewReducer(s, { type: 'select', id: 'b#1' });
     s = synced(buildTiles([]), s);
-    expect(s).toMatchObject({ order: [], hidden: [], muted: [], volume: {}, selected: null, screens: [], sharing: [] });
+    expect(s).toMatchObject({ order: [], hidden: [], muted: [], volume: {}, selected: [], screens: [], sharing: [] });
   });
 });
 
@@ -199,23 +200,24 @@ describe('ações', () => {
     expect(viewReducer(s, { type: 'select', id: 'zzz' })).toBe(s);
   });
 
-  it('selecionar um tile escondido o mostra; esconder o selecionado desfaz a seleção', () => {
+  it('selecionar um tile escondido o mostra; esconder um selecionado o tira da seleção', () => {
     let s = viewReducer(base(), { type: 'toggleHidden', id: 'c' });
     s = viewReducer(s, { type: 'select', id: 'c' });
-    expect(s).toMatchObject({ selected: 'c', hidden: [] });
+    expect(s).toMatchObject({ selected: ['c'], hidden: [] });
     s = viewReducer(s, { type: 'toggleHidden', id: 'c' });
-    expect(s.selected).toBeNull();
+    expect(s.selected).toEqual([]);
   });
 
-  it('selecionar o que já está selecionado solta; null solta; trocar de seleção troca', () => {
+  it('a seleção é MÚLTIPLA e independente: clicar alterna só aquele tile; null limpa tudo', () => {
     let s = viewReducer(base(), { type: 'select', id: 'a' });
     s = viewReducer(s, { type: 'select', id: 'b#1' });
-    expect(s.selected).toBe('b#1');
-    s = viewReducer(s, { type: 'select', id: 'b#1' });
-    expect(s.selected).toBeNull();
+    expect(s.selected).toEqual(['a', 'b#1']);
     s = viewReducer(s, { type: 'select', id: 'a' });
+    expect(s.selected).toEqual(['b#1']);
+    s = viewReducer(s, { type: 'select', id: 'c' });
     s = viewReducer(s, { type: 'select', id: null });
-    expect(s.selected).toBeNull();
+    expect(s.selected).toEqual([]);
+    expect(viewReducer(s, { type: 'select', id: null })).toBe(s);
   });
 
   it('volume: por chave, limitado a 0–1, ignora lixo; o padrão é 1', () => {
@@ -243,35 +245,58 @@ describe('exibição', () => {
     expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('grid');
   });
 
-  it('abrir uma tela vira destaque, com o tile que a mostra como principal', () => {
+  it('abrir uma tela vira destaque: o tile que a mostra forma o palco e os demais ficam na faixa', () => {
     const tiles = buildTiles([person('a'), person('b', { slots: [0, 1] })]);
     let s = synced(tiles);
     s = viewReducer(s, { type: 'openScreen', id: 'b#1' });
     const vis = visibleTiles(tiles, s);
     expect(effectiveLayout(vis, s)).toBe('spotlight');
-    expect(primaryTile(vis, s)?.id).toBe('b#1');
+    expect(ids(stageTiles(vis, s))).toEqual(['b#1']);
   });
 
-  it('as próprias telas também vão para o destaque', () => {
+  it('as próprias telas também formam o palco', () => {
     const tiles = buildTiles([person('eu', { conn: 'self', slots: [0] }), person('b')]);
     const s = synced(tiles);
-    expect(primaryTile(visibleTiles(tiles, s), s)?.id).toBe('eu');
+    expect(ids(stageTiles(visibleTiles(tiles, s), s))).toEqual(['eu']);
     expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('spotlight');
   });
 
-  it('a seleção vence a tela aberta e os demais continuam visíveis embaixo', () => {
-    const tiles = buildTiles([person('a', { conn: 'self' }), person('b', { slots: [0] }), person('c')]);
+  it('várias telas abertas, sem seleção, formam JUNTAS o palco (grade de telas)', () => {
+    const tiles = buildTiles([person('a'), person('b', { slots: [0, 1] }), person('c')]);
     let s = synced(tiles);
     s = viewReducer(s, { type: 'openScreen', id: 'b#0' });
-    s = viewReducer(s, { type: 'select', id: 'c' });
+    s = viewReducer(s, { type: 'openScreen', id: 'b#1' });
     const vis = visibleTiles(tiles, s);
-    expect(primaryTile(vis, s)?.id).toBe('c');
-    expect(ids(vis.filter((t) => t.id !== 'c'))).toEqual(['a', 'b']);
+    expect(ids(stageTiles(vis, s))).toEqual(['b', 'b#1']);
+    expect(effectiveLayout(vis, s)).toBe('spotlight');
   });
 
-  it('com um único tile visível não há o que separar: grade', () => {
-    const tiles = buildTiles([person('a')]);
-    const s = viewReducer(synced(tiles), { type: 'select', id: 'a' });
+  it('os selecionados formam o palco (na ordem dos tiles) e a seleção vence as telas abertas; os demais ficam na faixa', () => {
+    const tiles = buildTiles([person('a', { conn: 'self' }), person('b', { slots: [0] }), person('c'), person('d')]);
+    let s = synced(tiles);
+    s = viewReducer(s, { type: 'openScreen', id: 'b#0' });
+    s = viewReducer(s, { type: 'select', id: 'd' });
+    s = viewReducer(s, { type: 'select', id: 'c' });
+    const vis = visibleTiles(tiles, s);
+    expect(ids(stageTiles(vis, s))).toEqual(['c', 'd']); // ordem dos tiles, não a do clique
+    expect(effectiveLayout(vis, s)).toBe('spotlight');
+    expect(ids(vis.filter((t) => !stageTiles(vis, s).includes(t)))).toEqual(['a', 'b']);
+  });
+
+  it('se TODOS os tiles visíveis estão selecionados (ou só há um) não há o que separar: grade', () => {
+    const tiles = buildTiles([person('a'), person('b')]);
+    let s = synced(tiles);
+    s = viewReducer(s, { type: 'select', id: 'a' });
+    expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('spotlight');
+    s = viewReducer(s, { type: 'select', id: 'b' });
     expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('grid');
+    const solo = buildTiles([person('x')]);
+    const t = viewReducer(synced(solo), { type: 'select', id: 'x' });
+    expect(effectiveLayout(visibleTiles(solo, t), t)).toBe('grid');
+  });
+
+  it('colunas da grade do palco: raiz quadrada arredondada para cima', () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 9].map(stageColumns)).toEqual([1, 2, 2, 2, 3, 3, 3, 3]);
+    expect(stageColumns(0)).toBe(1);
   });
 });

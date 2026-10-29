@@ -18,9 +18,9 @@ export function useViewState(participants: ReadonlyArray<Person>) {
     dispatch({ type: 'sync', tiles });
   }, [tiles]);
 
-  const selected = view.selected;
+  const hasSelection = view.selected.length > 0;
   useEffect(() => {
-    if (!selected) return;
+    if (!hasSelection) return;
     const onKey = (e: KeyboardEvent) => {
       // Esc enquanto se digita (chat) ou se escolhe num select não deve soltar a seleção
       const el = e.target instanceof HTMLElement ? e.target : null;
@@ -29,7 +29,7 @@ export function useViewState(participants: ReadonlyArray<Person>) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selected]);
+  }, [hasSelection]);
 
   return { tiles, view, dispatch: dispatch as (a: ViewAction) => void };
 }

@@ -84,26 +84,54 @@ const aliveCountExpr = (limit: number) => ({
 function emitStages(type: RoomEventType, from: string, payload: Document, to: string | undefined, now: number): Document[] {
   return [
     { $set: { seq: { $add: [{ $ifNull: ['$seq', 0] }, 1] } } },
+    // 1) acrescenta o evento (já sem os mais velhos que EVENT_MAX_AGE_MS)
     {
       $set: {
         events: {
-          $slice: [
+          $concatArrays: [
             {
-              $concatArrays: [
-                {
-                  $filter: {
-                    input: { $ifNull: ['$events', []] },
-                    cond: { $gte: ['$$this.at', now - EVENT_MAX_AGE_MS] },
-                  },
-                },
-                [{ seq: '$seq', type, from, ...(to ? { to } : {}), payload, at: now }],
-              ],
+              $filter: {
+                input: { $ifNull: ['$events', []] },
+                cond: { $gte: ['$$this.at', now - EVENT_MAX_AGE_MS] },
+              },
             },
-            -MAX_EVENTS,
+            [{ seq: '$seq', type, from, ...(to ? { to } : {}), payload, at: now }],
           ],
         },
       },
     },
+    // 2) acima de MAX_EVENTS saem PRIMEIRO os sinais (SDP/ICE) mais velhos: são efêmeros e numerosos, e cortar uma
+    //    entrada/saída/estado faria quem demorou a consultar nunca mais ver aquela pessoa. O $reduce percorre o log em
+    //    ordem e descarta os primeiros `drop` sinais; o resto (controle e sinais mais novos) fica como está.
+    {
+      $set: {
+        events: {
+          $let: {
+            vars: { excess: { $max: [0, { $subtract: [{ $size: '$events' }, MAX_EVENTS] }] } },
+            in: {
+              $getField: {
+                field: 'out',
+                input: {
+                  $reduce: {
+                    input: '$events',
+                    initialValue: { out: [], drop: '$$excess' },
+                    in: {
+                      $cond: [
+                        { $and: [{ $gt: ['$$value.drop', 0] }, { $eq: ['$$this.type', 'signal'] }] },
+                        { out: '$$value.out', drop: { $subtract: ['$$value.drop', 1] } },
+                        { out: { $concatArrays: ['$$value.out', ['$$this']] }, drop: '$$value.drop' },
+                      ],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    // 3) sem sinais suficientes para descartar, corta os mais antigos de qualquer tipo
+    { $set: { events: { $slice: ['$events', -MAX_EVENTS] } } },
     { $set: { updatedAt: '$$NOW' } },
   ];
 }

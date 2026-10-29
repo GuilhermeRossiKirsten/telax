@@ -294,6 +294,47 @@ export function describeRoomStore(label: string, make: (now: () => number) => Ro
         expect(events.length).toBeLessThanOrEqual(MAX_EVENTS);
         expect(events.length).toBeGreaterThan(0);
       });
+
+      it('uma enxurrada de sinais não apaga entradas, saídas e estados de quem demorou a consultar', async () => {
+        // Ana entra primeiro e só consulta depois que os outros já negociaram: sinais (ICE) lotam o log
+        const a = await store.join(room, 'Ana');
+        const b = await store.join(room, 'Beto');
+        const c = await store.join(room, 'Cris');
+        await store.setState(room, b.peerId, { audio: false, video: true, sharing: false });
+        for (let i = 0; i < MAX_EVENTS + 300; i++) {
+          await store.signal(room, b.peerId, c.peerId, { gen: 0, kind: 'candidate', sid: 1, candidate: { candidate: `c${i}` } });
+        }
+        await store.leave(room, c.peerId);
+
+        const { events } = await store.events(room, a.peerId, a.cursor);
+        const controle = events.filter((e) => e.type !== 'signal').map((e) => `${e.type}:${e.from}`);
+        expect(controle).toEqual([
+          `join:${b.peerId}`,
+          `join:${c.peerId}`,
+          `state:${b.peerId}`,
+          `leave:${c.peerId}`,
+        ]);
+        // e o log continua limitado
+        expect((await store.events(room, b.peerId, 0)).events.length).toBeLessThanOrEqual(MAX_EVENTS);
+      });
+
+      it('ao estourar o limite os sinais MAIS VELHOS saem primeiro: o mais novo continua entregável', async () => {
+        const b = await store.join(room, 'Beto');
+        const c = await store.join(room, 'Cris');
+        for (let i = 0; i < MAX_EVENTS + 100; i++) {
+          await store.signal(room, b.peerId, c.peerId, { gen: 0, kind: 'candidate', sid: 1, candidate: { candidate: `c${i}` } });
+        }
+        const { events } = await store.events(room, c.peerId, 0);
+        const sinais = events.filter((e) => e.type === 'signal');
+        const ultimo = sinais[sinais.length - 1].payload as { candidate: { candidate: string } };
+        expect(ultimo.candidate.candidate).toBe(`c${MAX_EVENTS + 99}`);
+        expect(sinais.length).toBeGreaterThan(MAX_EVENTS - 5); // sobrou espaço para quase todos os sinais mais novos
+        expect(events.length).toBeLessThanOrEqual(MAX_EVENTS);
+        // seq continua crescente e sem repetição
+        const seqs = events.map((e) => e.seq);
+        expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+        expect(new Set(seqs).size).toBe(seqs.length);
+      });
     });
   });
 }

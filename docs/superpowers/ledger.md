@@ -115,3 +115,13 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Efeito colateral esperado: 2 testes antigos de `multi-screen.spec.ts` clicavam em "Parar compartilhamento" com 2–3 telas esperando parar todas; passaram a escolher "Parar todas as telas".
 - Verificação final: tsc limpo; vitest 279 passed / 4 skipped; e2e 55/55; mesh 5/5; npm audit 0; print do seletor conferido.
 - Ainda não verificado: captura real de várias abas/telas no Chrome, 8 m-lines no SDP real, Mongo com screenSlots, Atlas/Vercel, áudio do sistema real. Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.
+
+## Seleção múltipla em grade; bug do log de eventos
+
+- Pedido: várias telas selecionadas em grade e sem o botão de pin (só contorno). TDD em `view-state` (testes reescritos e vistos falhar antes; 30 testes); fork D reescreveu os e2e a partir de um contrato (9 testes novos em `selection.spec.ts`) enquanto eu fiz estado, grade, overlay e CSS; print conferido (3 selecionados em grade de 2 colunas, Ana na faixa).
+- Os testes novos tiveram falha intermitente (~1 em 3 rodadas, em testes diferentes). Em vez de aceitar como "carga", reproduzi o cenário (4 pessoas entrando pelo formulário) em laço: falhou na 6ª/7ª iteração. Capturei a sequência de eventos da observadora: o primeiro `events` já vinha com `cursor=602` e SEM nenhum `join`. Causa raiz: `MAX_EVENTS = 500` cortava os eventos mais velhos, e os sinais ICE (8 faixas por par) enchem o log antes de quem entrou primeiro consultar. Bug real de produto, anterior a esta rodada mas agravado pelas 8 faixas.
+- Correção com TDD: 2 testes no contrato do RoomStore (rodam nos dois armazenamentos); o da enxurrada falhou na memória e no Mongo REAL (Docker, mongo:7) antes de corrigir. Política: sinais mais velhos saem primeiro. Memória feita por mim; Mongo por fork (`$reduce` em pipeline de update, um único update atômico), validado: 121/121 com Mongo real.
+- Depois: 80/80 iterações do laço sem falha (antes: falha na 6ª/7ª), selection.spec 4/4 limpas; e2e 64/64; mesh 5/5; vitest 283 passed/4 skipped (os 4 viram passados com MONGODB_TEST_URI); audit 0.
+- Registro de honestidade: antes de reproduzir, eu e o fork E tratamos a falha como instabilidade do teste. O print do `error-context` mostrou o participante ausente por 20 s, o que não é lentidão.
+- Risco que ficou: o `$reduce` do Mongo é O(n≤500) por escrita (latência não medida em Atlas); o cliente ainda não detecta lacuna de eventos.
+- Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.

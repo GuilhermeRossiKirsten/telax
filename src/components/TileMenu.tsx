@@ -152,7 +152,7 @@ export function TileMenu(p: Props) {
   const showTab = !p.isSelf && p.slot !== null;
   const items: ReactNode[] = [];
 
-  items.push(<Item key="sel" icon="pin" label={p.selected ? `Soltar ${p.label}` : `Destacar ${p.label}`} onClick={act(p.onToggleSelect)} />);
+  items.push(<Item key="sel" icon="frame" label={p.selected ? `Soltar ${p.label}` : `Destacar ${p.label}`} onClick={act(p.onToggleSelect)} />);
   items.push(
     <Item
       key="fs"

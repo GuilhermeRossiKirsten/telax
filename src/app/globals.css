@@ -995,3 +995,18 @@ ul[data-testid='participants'] .row-volume input[type='range'] {
   border-radius: 0 0 8px 8px;
   color: var(--danger);
 }
+
+/* palco: os tiles selecionados (ou com tela aberta) formam juntos uma grade; a seleção é só o contorno */
+.tiles-primary[data-count] {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 10px;
+}
+.tiles-primary[data-count] .tile {
+  min-height: 0;
+}
+.tile[data-selected='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px rgba(200, 245, 80, 0.25);
+}

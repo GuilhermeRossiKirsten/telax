@@ -18,9 +18,11 @@ intermedeia a sinalização, a presença e o chat.
   ("Tela 2 de Ana"), cada um com o seu volume do som da aba. Slots fixos: parar uma tela não mexe nas outras
 - **Formato original:** a tela aberta e o tile selecionado mostram a imagem **inteira, sem esticar nem cortar**
   (`object-fit: contain`); a câmera na grade continua preenchendo o tile
-- **Controle das telas (só para quem o faz):** clique num tile para **selecioná-lo**: ele fica grande e os demais,
-  participantes inclusive, ficam numa faixa embaixo (clique de novo ou Esc solta). O overlay do tile (ao passar o
-  mouse) tem **fixar**, **tela cheia** de verdade (API de fullscreen), **fechar** (fechar a tela volta ao
+- **Seleção múltipla em grade (só para quem a faz):** clique em um tile para selecioná-lo (clique de novo tira só
+  ele; Esc limpa tudo). Cada tile selecionado ganha só um **contorno** (não há botão de fixar), e os selecionados
+  formam **juntos uma grade grande** (1 → um tile; 2 → lado a lado; 3–4 → 2 colunas; 5–9 → 3 colunas), com os
+  demais, participantes inclusive, numa faixa embaixo. Sem seleção, as telas abertas formam essa grade. O overlay
+  do tile (ao passar o mouse) tem **tela cheia** de verdade (API de fullscreen), **fechar** (fechar a tela volta ao
   avatar/câmera e para o som da aba; fechar o tile o manda para a faixa "Fechadas") e **Mais opções**
 - **Menu de botão direito** (ou "Mais opções") em cada tile: o áudio fica ali, em dois grupos que não se confundem:
   **Voz de {pessoa}** (ícone de microfone) e **Som da transmissão** (ícone de tela; um por tela compartilhada), cada um
@@ -191,11 +193,11 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 279 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 283 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (55 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 55 passaram |
+| E2E, 2 participantes (64 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 64 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |

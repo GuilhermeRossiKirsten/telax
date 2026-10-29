@@ -1,13 +1,14 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, type CSSProperties } from 'react';
 import type { Participant, RemoteStreams } from '@/hooks/use-room';
 import type { ViewApi } from '@/hooks/use-view-state';
 import {
   applyVolume,
   effectiveLayout,
   orderedTiles,
-  primaryTile,
+  stageColumns,
+  stageTiles,
   screenIdOf,
   screenKey,
   showsScreen,
@@ -75,7 +76,7 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
         audioOn={p.audio}
         videoOn={p.video}
         showScreen={showsScreen(t, view)}
-        selected={view.selected === t.id}
+        selected={view.selected.includes(t.id)}
         voice={sound(vKey)}
         tab={sid ? sound(sKey) : { muted: true, volume: 1 }}
         onToggleVoice={() => dispatch({ type: 'toggleMuted', key: vKey })}
@@ -98,12 +99,18 @@ export function VideoGrid({ participants, remoteStreams, localCamera, localScree
   const off = tiles.filter((t) => !visible.includes(t));
 
   const layout = effectiveLayout(visible, view);
-  const main = layout === 'spotlight' ? primaryTile(visible, view) : undefined;
-  const stage = main ? (
-    // selecionado (ou tela aberta) grande; todos os demais, participantes inclusive, na faixa embaixo
+  const featured = layout === 'spotlight' ? stageTiles(visible, view) : [];
+  const stage = featured.length > 0 ? (
+    // os selecionados (ou as telas abertas) formam, juntos, uma grade grande; todos os demais, participantes inclusive, ficam na faixa embaixo
     <div className="tiles" data-testid="tiles" data-layout="spotlight">
-      <div className="tiles-primary">{render(main)}</div>
-      <div className="tiles-rest">{visible.filter((t) => t !== main).map(render)}</div>
+      <div
+        className="tiles-primary"
+        data-count={featured.length}
+        style={{ '--cols': stageColumns(featured.length) } as CSSProperties}
+      >
+        {featured.map(render)}
+      </div>
+      <div className="tiles-rest">{visible.filter((t) => !featured.includes(t)).map(render)}</div>
     </div>
   ) : (
     <div className="tiles" data-testid="tiles" data-layout="grid" data-count={Math.min(visible.length, 9)}>

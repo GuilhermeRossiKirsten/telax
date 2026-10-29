@@ -141,7 +141,18 @@ export class MemoryRoomStore implements RoomStore {
   private emit(r: Room, type: RoomEventType, from: string, payload: unknown, to?: string) {
     r.seq += 1;
     r.events.push({ seq: r.seq, type, from, to, payload });
-    if (r.events.length > MAX_EVENTS) r.events.splice(0, r.events.length - MAX_EVENTS);
+    let excess = r.events.length - MAX_EVENTS;
+    if (excess <= 0) return;
+    // Os sinais (SDP/ICE) são efêmeros e muito numerosos: numa sala com várias pessoas eles lotam o log em segundos.
+    // Ao estourar o limite saem PRIMEIRO os sinais mais velhos; entradas, saídas, estados e chat só saem se faltar espaço
+    // (cortar uma entrada faria quem demorou a consultar nunca mais ver aquela pessoa).
+    const kept: typeof r.events = [];
+    for (const e of r.events) {
+      if (excess > 0 && e.type === 'signal') excess -= 1;
+      else kept.push(e);
+    }
+    r.events = kept;
+    if (excess > 0) r.events.splice(0, excess);
   }
 
   private sweep() {
