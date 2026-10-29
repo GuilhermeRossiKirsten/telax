@@ -22,12 +22,17 @@ type Props = {
   audioOn?: boolean;
   videoOn?: boolean;
   conn: ConnState | 'self';
-  /** áudio silenciado só neste navegador (o som em si toca no RemoteAudio; aqui só o botão e o selo) */
+  /** áudio silenciado só neste navegador (o som em si toca no RemoteAudio; aqui só os controles e o selo) */
   muted?: boolean;
-  maximized?: boolean;
+  /** volume de 0 a 1 só neste navegador */
+  volume?: number;
+  /** é o tile em destaque */
+  selected?: boolean;
   onToggleMuted?(): void;
-  onHide?(): void;
-  onToggleMaximize?(): void;
+  onVolume?(volume: number): void;
+  /** fechar = parar de visualizar (a faixa "Fechadas" permite abrir de novo) */
+  onClose?(): void;
+  onToggleSelect?(): void;
 };
 
 export function VideoTile({
@@ -40,10 +45,12 @@ export function VideoTile({
   videoOn = true,
   conn,
   muted = false,
-  maximized = false,
+  volume = 1,
+  selected = false,
   onToggleMuted,
-  onHide,
-  onToggleMaximize,
+  onVolume,
+  onClose,
+  onToggleSelect,
 }: Props) {
   const ref = useRef<HTMLVideoElement>(null);
 
@@ -58,8 +65,8 @@ export function VideoTile({
   }, [stream]);
 
   const hasVideo = !!stream && stream.getVideoTracks().length > 0 && (kind === 'screen' || videoOn);
-  // a própria imagem já sai muda no elemento (evita eco); câmera e tela dos outros podem ser silenciadas
-  const canMute = !isSelf;
+  // a própria imagem não tem som para ajustar (evita eco); câmera e tela dos outros sim
+  const hasSound = !isSelf;
   const stop = (fn?: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     fn?.();
@@ -70,8 +77,8 @@ export function VideoTile({
       className={`tile ${kind === 'screen' ? 'tile-screen' : ''}`}
       data-conn={conn}
       data-testid={`tile-${kind}`}
-      data-maximized={maximized ? 'true' : undefined}
-      onClick={onToggleMaximize}
+      data-selected={selected ? 'true' : undefined}
+      onClick={onToggleSelect}
     >
       <video
         ref={ref}
@@ -86,27 +93,40 @@ export function VideoTile({
           {name.slice(0, 1).toUpperCase()}
         </div>
       )}
-      <div className="tile-actions">
-        {canMute && (
-          <button
-            className="tile-btn"
-            aria-label={muted ? `Ativar som de ${label}` : `Silenciar ${label}`}
-            title={muted ? 'Voltar a ouvir esta pessoa' : 'Parar de ouvir esta pessoa (só para você)'}
-            onClick={stop(onToggleMuted)}
-          >
-            <Icon name={muted ? 'volumeOff' : 'volume'} size={16} />
-          </button>
+      {/* overlay sobre a imagem: aparece ao passar o mouse ou focar; o clique no corpo do tile seleciona */}
+      <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
+        {hasSound && (
+          <div className="tile-volume">
+            <button
+              className="tile-btn"
+              aria-label={muted ? `Ativar som de ${label}` : `Silenciar ${label}`}
+              title={muted ? 'Voltar a ouvir (só para você)' : 'Silenciar (só para você)'}
+              onClick={stop(onToggleMuted)}
+            >
+              <Icon name={muted || volume === 0 ? 'volumeOff' : 'volume'} size={16} />
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={Math.round((muted ? 0 : volume) * 100)}
+              aria-label={`Volume de ${label}`}
+              onChange={(e) => onVolume?.(Number(e.target.value) / 100)}
+            />
+          </div>
         )}
-        <button className="tile-btn" aria-label={`Ocultar ${label}`} title="Ocultar esta tela (só para você)" onClick={stop(onHide)}>
-          <Icon name="eyeOff" size={16} />
-        </button>
         <button
           className="tile-btn"
-          aria-label={maximized ? `Restaurar ${label}` : `Maximizar ${label}`}
-          title={maximized ? 'Voltar ao layout' : 'Maximizar'}
-          onClick={stop(onToggleMaximize)}
+          aria-pressed={selected}
+          aria-label={selected ? `Soltar ${label}` : `Destacar ${label}`}
+          title={selected ? 'Voltar ao layout normal' : 'Destacar: fica grande e os outros ficam embaixo'}
+          onClick={stop(onToggleSelect)}
         >
-          <Icon name={maximized ? 'minimize' : 'maximize'} size={16} />
+          <Icon name={selected ? 'minimize' : 'maximize'} size={16} />
+        </button>
+        <button className="tile-btn" aria-label={`Fechar ${label}`} title="Parar de visualizar (só para você)" onClick={stop(onClose)}>
+          <Icon name="close" size={16} />
         </button>
       </div>
       <figcaption>

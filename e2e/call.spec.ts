@@ -189,7 +189,7 @@ test('compartilhamento de tela aparece para o outro participante', async ({ brow
   const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
 
   // a tela de outra pessoa chega oculta: Beto escolhe mostrar
-  const shelf = beto.page.getByRole('region', { name: 'Telas ocultas' });
+  const shelf = beto.page.getByRole('region', { name: 'Telas fechadas' });
   await expect(screen).toBeHidden();
   await shelf.getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
   await expect(screen).toBeVisible();
@@ -241,7 +241,7 @@ test('compartilhar o som da aba: chega como faixa separada, começa silenciado e
   await expect(ana.page.getByRole('button', { name: 'Tela', exact: true })).toHaveAttribute('title', /som da aba está sendo enviado/);
 
   const screen = beto.page.locator('figure[data-testid="tile-screen"]', { hasText: 'Tela de Ana' });
-  await beto.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
+  await beto.page.getByRole('region', { name: 'Telas fechadas' }).getByRole('button', { name: 'Mostrar Tela de Ana' }).click();
   await expect(screen).toBeVisible();
   // o som da tela toca num <audio> próprio (o do tile da câmera é outro): começa silenciado
   const sound = audioOf(beto.page, 'screen');
@@ -293,7 +293,7 @@ const markAudio = (a: ReturnType<Page['locator']>) =>
 const sameAudioStillPlaying = (a: ReturnType<Page['locator']>) =>
   a.evaluate((el: HTMLAudioElement) => el.dataset.mark === 'mesmo-elemento' && !el.paused && !el.muted);
 
-test('ocultar tira a tela da grade, mantém o áudio tocando e "Mostrar" traz de volta', async ({ browser }) => {
+test('fechar tira a tela da grade, mantém o áudio tocando e "Mostrar" traz de volta', async ({ browser }) => {
   const { ana, beto } = await pair(browser, 'ocultar');
   await expectConnected(ana.page, 'Beto');
   const tile = tileOf(ana.page, 'Beto');
@@ -302,15 +302,15 @@ test('ocultar tira a tela da grade, mantém o áudio tocando e "Mostrar" traz de
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
   await markAudio(sound);
 
-  await tile.getByRole('button', { name: 'Ocultar Beto' }).click();
+  await tile.getByRole('button', { name: 'Fechar Beto' }).click();
   await expect(tile).toBeHidden();
-  // oculto não é desligado: é o MESMO <audio>, ainda tocando e com som, e a imagem segue chegando
+  // fechar só tira a imagem: é o MESMO <audio>, ainda tocando e com som, e a imagem segue chegando
   expect(await sameAudioStillPlaying(sound)).toBe(true);
   await expect.poll(() => playing(tile)).toBe(true);
 
-  await ana.page.getByRole('region', { name: 'Telas ocultas' }).getByRole('button', { name: 'Mostrar Beto' }).click();
+  await ana.page.getByRole('region', { name: 'Telas fechadas' }).getByRole('button', { name: 'Mostrar Beto' }).click();
   await expect(tile).toBeVisible();
-  await expect(ana.page.getByRole('region', { name: 'Telas ocultas' })).toHaveCount(0);
+  await expect(ana.page.getByRole('region', { name: 'Telas fechadas' })).toHaveCount(0);
   await expect.poll(() => playing(tile)).toBe(true);
   expect(await sameAudioStillPlaying(sound)).toBe(true);
 
@@ -342,78 +342,81 @@ test('silenciar corta só o áudio daquela pessoa, neste navegador', async ({ br
   await beto.ctx.close();
 });
 
-test('clicar na tela maximiza; Esc restaura; se a pessoa maximizada sai, a grade volta', async ({ browser }) => {
-  const { ana, beto } = await pair(browser, 'maximizar');
+test('clicar numa tela a seleciona: fica grande e os outros ficam embaixo; Esc solta; quem sai não deixa seleção vazia', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'selecionar');
   await expectConnected(ana.page, 'Beto');
   const tile = tileOf(ana.page, 'Beto');
   const mine = tileOf(ana.page, 'Ana');
+  const tiles = ana.page.getByTestId('tiles');
   const sound = audioOf(ana.page, 'camera');
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
   await markAudio(sound);
+  await expect(tiles).toHaveAttribute('data-layout', 'grid');
 
-  await tile.click({ position: { x: 24, y: 24 } });
-  await expect(tile).toHaveAttribute('data-maximized', 'true');
-  await expect(mine).toBeHidden();
+  await tile.click({ position: { x: 24, y: 80 } });
+  await expect(tile).toHaveAttribute('data-selected', 'true');
+  await expect(tiles).toHaveAttribute('data-layout', 'spotlight');
+  // o selecionado é o grande e a própria câmera continua visível, na faixa de baixo
+  await expect(ana.page.locator('.tiles-primary').locator('figure[data-testid="tile-camera"]', { hasText: 'Beto' })).toBeVisible();
+  await expect(ana.page.locator('.tiles-rest').locator('figure[data-testid="tile-camera"]', { hasText: 'Ana' })).toBeVisible();
   await expect.poll(() => playing(tile)).toBe(true);
   expect(await sameAudioStillPlaying(sound)).toBe(true);
 
   await ana.page.keyboard.press('Escape');
-  await expect(tile).not.toHaveAttribute('data-maximized', 'true');
-  await expect(mine).toBeVisible();
+  await expect(tile).not.toHaveAttribute('data-selected', 'true');
+  await expect(tiles).toHaveAttribute('data-layout', 'grid');
 
-  await tile.getByRole('button', { name: 'Maximizar Beto' }).click();
-  await expect(tile).toHaveAttribute('data-maximized', 'true');
-  await tile.getByRole('button', { name: 'Restaurar Beto' }).click();
-  await expect(mine).toBeVisible();
-  expect(await sameAudioStillPlaying(sound)).toBe(true); // nem maximizar nem restaurar recriam o som
+  await tile.getByRole('button', { name: 'Destacar Beto' }).click();
+  await expect(tile).toHaveAttribute('data-selected', 'true');
+  await tile.getByRole('button', { name: 'Soltar Beto' }).click();
+  await expect(tiles).toHaveAttribute('data-layout', 'grid');
+  expect(await sameAudioStillPlaying(sound)).toBe(true); // nem selecionar nem soltar recriam o som
 
-  await tile.getByRole('button', { name: 'Maximizar Beto' }).click();
+  await tile.getByRole('button', { name: 'Destacar Beto' }).click();
   await beto.page.close({ runBeforeUnload: true });
   await expect(tile).toHaveCount(0, { timeout: 25_000 });
-  await expect(mine).toBeVisible(); // nada de tela maximizada vazia
+  await expect(mine).toBeVisible(); // nada de destaque vazio
+  await expect(tiles).toHaveAttribute('data-layout', 'grid');
   await ana.ctx.close();
   await beto.ctx.close();
 });
 
-test('aba Telas: reordena, muda o layout e as colunas, e lembra a escolha ao recarregar', async ({ browser }) => {
-  const { ana, beto } = await pair(browser, 'painel');
+test('o painel não tem a aba Telas; o overlay da tela controla volume, silenciar e fechar', async ({ browser }) => {
+  const { ana, beto } = await pair(browser, 'overlay');
   await expectConnected(ana.page, 'Beto');
-  await ana.page.getByRole('tab', { name: 'Telas' }).click();
-  const list = ana.page.getByTestId('tile-list');
-  const cams = ana.page.locator('[data-testid="tiles"] figure[data-testid="tile-camera"]');
-  await expect(cams.first()).toContainText('Ana');
+  await expect(ana.page.getByRole('tab', { name: 'Telas' })).toHaveCount(0);
+  await expect(ana.page.getByRole('tab')).toHaveCount(3); // Participantes, Chat, Arquivos
+
+  const tile = tileOf(ana.page, 'Beto');
   const sound = audioOf(ana.page, 'camera');
+  const slider = tile.getByRole('slider', { name: 'Volume de Beto' });
+  const volume = () => sound.evaluate((a: HTMLAudioElement) => a.volume);
   await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => !a.paused)).toBe(true);
   await markAudio(sound);
 
-  await list.getByRole('button', { name: 'Subir Beto' }).click();
-  await expect(cams.first()).toContainText('Beto');
-  await expect(list.locator('li').first()).toContainText('Beto');
+  await tile.hover(); // o overlay aparece ao passar o mouse
+  await expect(slider).toBeVisible();
+  await slider.fill('30');
+  await expect.poll(volume).toBeCloseTo(0.3, 2);
 
-  const tiles = ana.page.getByTestId('tiles');
-  await ana.page.getByLabel('Layout').selectOption('sidebar');
-  await expect(tiles).toHaveAttribute('data-layout', 'sidebar');
-  await expect(ana.page.getByLabel('Colunas')).toBeDisabled(); // colunas só valem na grade
-  // trocar de layout move os tiles de lugar, mas o som (um <audio> fixo) segue o mesmo e sem cortes
+  // silenciar e voltar a mexer no volume volta a ouvir
+  await tile.getByRole('button', { name: 'Silenciar Beto' }).click();
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(true);
+  await expect(slider).toHaveValue('0');
+  await slider.fill('60');
+  await expect.poll(() => sound.evaluate((a: HTMLAudioElement) => a.muted)).toBe(false);
+  await expect.poll(volume).toBeCloseTo(0.6, 2);
+
+  // o overlay não dispara a seleção, e o volume é só deste navegador
+  await expect(tile).not.toHaveAttribute('data-selected', 'true');
+  expect(await beto.page.locator('[data-testid^="audio-camera:"]').evaluate((a: HTMLAudioElement) => a.volume)).toBe(1);
+
+  // fechar = parar de visualizar; o som continua o mesmo até quem fechou decidir silenciar
+  await tile.getByRole('button', { name: 'Fechar Beto' }).click();
+  await expect(tile).toBeHidden();
+  await expect(ana.page.getByRole('region', { name: 'Telas fechadas' }).getByRole('button', { name: 'Mostrar Beto' })).toBeVisible();
   expect(await sameAudioStillPlaying(sound)).toBe(true);
-  await ana.page.getByLabel('Layout').selectOption('grid');
-  await expect(ana.page.getByLabel('Colunas')).toBeEnabled();
-  expect(await sameAudioStillPlaying(sound)).toBe(true);
-  await ana.page.getByLabel('Colunas').selectOption('2');
-  await expect(tiles).toHaveAttribute('data-columns', '2');
-
-  // ocultar e silenciar também pelo painel
-  await list.getByRole('button', { name: 'Ocultar Beto' }).click();
-  await expect(tileOf(ana.page, 'Beto')).toBeHidden();
-  await list.getByRole('button', { name: 'Mostrar Beto' }).click();
-  await expect(tileOf(ana.page, 'Beto')).toBeVisible();
-
-  await ana.page.getByLabel('Layout').selectOption('spotlight');
-  await ana.page.reload();
-  await ana.page.getByRole('tab', { name: 'Telas' }).click();
-  await expect(ana.page.getByLabel('Layout')).toHaveValue('spotlight');
-  await ana.page.getByRole('tab', { name: /Participantes/ }).click();
-  await expectConnected(ana.page, 'Beto');
+  expect(await volume()).toBeCloseTo(0.6, 2);
   await ana.ctx.close();
   await beto.ctx.close();
 });

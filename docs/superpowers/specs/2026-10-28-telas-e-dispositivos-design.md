@@ -36,3 +36,12 @@ Tudo é decisão **local**: o que um usuário oculta, silencia ou reordena não 
 - Arrastar e soltar para reordenar (a reordenação é por botões, acessível e testável).
 - Escolher a câmera.
 - Sincronizar preferências com outros usuários ou entre sessões além de layout/colunas/dispositivos.
+
+## Revisão de escopo (pedido posterior do usuário)
+
+A aba **Telas** do painel foi **retirada**, junto com o seletor de layout/colunas e a reordenação. Em seu lugar:
+
+- **Selecionar:** clicar numa tela a seleciona; ela fica grande e todas as outras (participantes inclusive) ficam numa faixa embaixo. Clicar de novo ou Esc solta. Sem seleção, o layout é automático (grade; destaque se há uma tela compartilhada aberta).
+- **Overlay sobre cada tela** (ao passar o mouse/foco; sempre visível em toque): **volume** (0–100), **silenciar**, **destacar/soltar** e **fechar**. Fechar = parar de visualizar (a faixa "Fechadas" traz de volta); o som segue como estava, a menos que também silenciado. Mexer no volume de quem está silenciado volta a ouvir.
+- O volume é por tile, só no navegador de quem ajusta, aplicado no `<audio>` fixo de cada tile (`RemoteAudio`). As seções acima que falam de aba Telas, layout, colunas e reordenação ficam substituídas por esta.
+- Layout e colunas deixam de existir como preferência; nada é salvo em localStorage para as telas (só os dispositivos de áudio).

@@ -8,6 +8,7 @@ import {
   tileLabel,
   viewReducer,
   visibleTiles,
+  volumeOf,
   type Tile,
   type ViewState,
 } from './view-state';
@@ -41,12 +42,11 @@ describe('tileLabel', () => {
 });
 
 describe('sync', () => {
-  it('tiles novos entram no fim da ordem e a ordem escolhida é preservada', () => {
+  it('tiles novos entram no fim e a ordem existente é preservada', () => {
     let s = synced(buildTiles([person('a'), person('b')]));
-    s = viewReducer(s, { type: 'move', id: 'camera:b', dir: 'up' });
-    expect(s.order).toEqual(['camera:b', 'camera:a']);
+    expect(s.order).toEqual(['camera:a', 'camera:b']);
     s = synced(buildTiles([person('a'), person('b'), person('c')]), s);
-    expect(s.order).toEqual(['camera:b', 'camera:a', 'camera:c']);
+    expect(s.order).toEqual(['camera:a', 'camera:b', 'camera:c']);
   });
 
   it('é idempotente: sincronizar a mesma lista devolve o mesmo estado (sem re-render em loop)', () => {
@@ -73,14 +73,15 @@ describe('sync', () => {
     expect(s.hidden).toEqual(['screen:b']);
   });
 
-  it('quem sai não deixa estado órfão: some de ordem, ocultas, silenciadas e maximizada', () => {
+  it('quem sai não deixa estado órfão: some de ordem, ocultas, silenciadas, volume e selecionada', () => {
     const tiles = buildTiles([person('a'), person('b')]);
     let s = synced(tiles);
     s = viewReducer(s, { type: 'toggleHidden', id: 'camera:b' });
     s = viewReducer(s, { type: 'toggleMuted', id: 'camera:b' });
-    s = viewReducer(s, { type: 'maximize', id: 'camera:a' });
+    s = viewReducer(s, { type: 'volume', id: 'camera:b', volume: 0.4 });
+    s = viewReducer(s, { type: 'select', id: 'camera:a' });
     s = synced(buildTiles([]), s);
-    expect(s).toMatchObject({ order: [], hidden: [], muted: [], maximized: null });
+    expect(s).toMatchObject({ order: [], hidden: [], muted: [], volume: {}, selected: null });
   });
 });
 
@@ -88,16 +89,7 @@ describe('ações', () => {
   const tiles = buildTiles([person('a'), person('b'), person('c')]);
   const base = () => synced(tiles);
 
-  it('mover troca com o vizinho e não passa das pontas', () => {
-    let s = viewReducer(base(), { type: 'move', id: 'camera:a', dir: 'down' });
-    expect(s.order).toEqual(['camera:b', 'camera:a', 'camera:c']);
-    s = viewReducer(s, { type: 'move', id: 'camera:b', dir: 'up' });
-    expect(s.order).toEqual(['camera:b', 'camera:a', 'camera:c']);
-    s = viewReducer(s, { type: 'move', id: 'camera:c', dir: 'down' });
-    expect(s.order).toEqual(['camera:b', 'camera:a', 'camera:c']);
-  });
-
-  it('ocultar e mostrar alternam; silenciar e reativar alternam', () => {
+  it('fechar (ocultar) e mostrar alternam; silenciar e reativar alternam', () => {
     let s = viewReducer(base(), { type: 'toggleHidden', id: 'camera:b' });
     expect(ids(visibleTiles(tiles, s))).toEqual(['camera:a', 'camera:c']);
     s = viewReducer(s, { type: 'toggleHidden', id: 'camera:b' });
@@ -108,89 +100,91 @@ describe('ações', () => {
     expect(s.muted).toEqual([]);
   });
 
-  it('maximizar um tile oculto o mostra; ocultar o maximizado restaura a grade', () => {
+  it('selecionar um tile oculto o mostra; fechar o selecionado desfaz a seleção', () => {
     let s = viewReducer(base(), { type: 'toggleHidden', id: 'camera:b' });
-    s = viewReducer(s, { type: 'maximize', id: 'camera:b' });
-    expect(s).toMatchObject({ maximized: 'camera:b', hidden: [] });
+    s = viewReducer(s, { type: 'select', id: 'camera:b' });
+    expect(s).toMatchObject({ selected: 'camera:b', hidden: [] });
     s = viewReducer(s, { type: 'toggleHidden', id: 'camera:b' });
-    expect(s.maximized).toBeNull();
+    expect(s.selected).toBeNull();
     expect(s.hidden).toEqual(['camera:b']);
   });
 
-  it('maximizar o que já está maximizado restaura; null restaura', () => {
-    let s = viewReducer(base(), { type: 'maximize', id: 'camera:a' });
-    s = viewReducer(s, { type: 'maximize', id: 'camera:a' });
-    expect(s.maximized).toBeNull();
-    s = viewReducer(s, { type: 'maximize', id: 'camera:a' });
-    s = viewReducer(s, { type: 'maximize', id: null });
-    expect(s.maximized).toBeNull();
+  it('selecionar o que já está selecionado solta; null solta; trocar de seleção troca', () => {
+    let s = viewReducer(base(), { type: 'select', id: 'camera:a' });
+    s = viewReducer(s, { type: 'select', id: 'camera:b' });
+    expect(s.selected).toBe('camera:b');
+    s = viewReducer(s, { type: 'select', id: 'camera:b' });
+    expect(s.selected).toBeNull();
+    s = viewReducer(s, { type: 'select', id: 'camera:a' });
+    s = viewReducer(s, { type: 'select', id: null });
+    expect(s.selected).toBeNull();
+  });
+
+  it('volume: guarda por tile, limita a 0–1 e ignora lixo; o padrão é 1', () => {
+    let s = viewReducer(base(), { type: 'volume', id: 'camera:b', volume: 0.35 });
+    expect(volumeOf(s, 'camera:b')).toBe(0.35);
+    expect(volumeOf(s, 'camera:c')).toBe(1);
+    s = viewReducer(s, { type: 'volume', id: 'camera:b', volume: 7 });
+    expect(volumeOf(s, 'camera:b')).toBe(1);
+    s = viewReducer(s, { type: 'volume', id: 'camera:b', volume: -3 });
+    expect(volumeOf(s, 'camera:b')).toBe(0);
+    const same = viewReducer(s, { type: 'volume', id: 'camera:b', volume: Number.NaN });
+    expect(same).toBe(s);
   });
 
   it('ignora ids que não existem', () => {
     const s = base();
-    expect(viewReducer(s, { type: 'move', id: 'camera:zzz', dir: 'up' })).toBe(s);
     expect(viewReducer(s, { type: 'toggleHidden', id: 'camera:zzz' })).toBe(s);
     expect(viewReducer(s, { type: 'toggleMuted', id: 'camera:zzz' })).toBe(s);
-    expect(viewReducer(s, { type: 'maximize', id: 'camera:zzz' })).toBe(s);
-  });
-
-  it('layout e colunas: valores inválidos são ignorados', () => {
-    let s = viewReducer(base(), { type: 'layout', layout: 'sidebar' });
-    s = viewReducer(s, { type: 'columns', columns: 3 });
-    expect(s).toMatchObject({ layout: 'sidebar', columns: 3 });
-    expect(viewReducer(s, { type: 'columns', columns: 9 })).toBe(s);
-    expect(viewReducer(s, { type: 'columns', columns: 1.5 })).toBe(s);
-    expect(viewReducer(s, { type: 'layout', layout: 'xyz' as never })).toBe(s);
-  });
-
-  it('initialView aproveita preferências válidas e descarta lixo', () => {
-    expect(initialView({ layout: 'spotlight', columns: 2 })).toMatchObject({ layout: 'spotlight', columns: 2 });
-    expect(initialView({ layout: 'nope' as never, columns: 99 })).toMatchObject({ layout: 'auto', columns: 0 });
+    expect(viewReducer(s, { type: 'select', id: 'camera:zzz' })).toBe(s);
+    expect(viewReducer(s, { type: 'volume', id: 'camera:zzz', volume: 0.5 })).toBe(s);
   });
 });
 
 describe('exibição', () => {
   it('orderedTiles segue a ordem do estado e põe no fim o que ainda não foi sincronizado', () => {
     const tiles = buildTiles([person('a'), person('b'), person('c')]);
-    let s = synced(buildTiles([person('a'), person('b')]));
-    s = viewReducer(s, { type: 'move', id: 'camera:b', dir: 'up' });
-    expect(ids(orderedTiles(tiles, s))).toEqual(['camera:b', 'camera:a', 'camera:c']);
+    const s = synced(buildTiles([person('a'), person('b')]));
+    expect(ids(orderedTiles(tiles, s))).toEqual(['camera:a', 'camera:b', 'camera:c']);
   });
 
-  it('auto vira destaque quando há tela visível, com ela como principal; senão é grade', () => {
-    const noShare = buildTiles([person('a'), person('b')]);
-    expect(effectiveLayout(visibleTiles(noShare, synced(noShare)), synced(noShare))).toBe('grid');
+  it('sem seleção nem tela visível é grade', () => {
+    const tiles = buildTiles([person('a'), person('b')]);
+    const s = synced(tiles);
+    expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('grid');
+  });
 
-    const withShare = buildTiles([person('a'), person('b', { sharing: true })]);
-    let s = synced(withShare);
-    expect(effectiveLayout(visibleTiles(withShare, s), s)).toBe('grid'); // a tela remota começa oculta
+  it('com uma tela compartilhada visível vira destaque, com ela como principal', () => {
+    const tiles = buildTiles([person('a'), person('b', { sharing: true })]);
+    let s = synced(tiles);
+    expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('grid'); // a tela remota começa oculta
     s = viewReducer(s, { type: 'toggleHidden', id: 'screen:b' });
-    const vis = visibleTiles(withShare, s);
+    const vis = visibleTiles(tiles, s);
     expect(effectiveLayout(vis, s)).toBe('spotlight');
     expect(primaryTile(vis, s)?.id).toBe('screen:b');
   });
 
-  it('layouts explícitos usam o primeiro tile visível como principal', () => {
-    const tiles = buildTiles([person('a'), person('b')]);
+  it('o tile selecionado vira o principal e os demais (inclusive os participantes) ficam visíveis embaixo', () => {
+    const tiles = buildTiles([person('a', { conn: 'self' }), person('b'), person('c')]);
     let s = synced(tiles);
-    s = viewReducer(s, { type: 'layout', layout: 'sidebar' });
-    s = viewReducer(s, { type: 'move', id: 'camera:b', dir: 'up' });
+    s = viewReducer(s, { type: 'select', id: 'camera:c' });
     const vis = visibleTiles(tiles, s);
-    expect(effectiveLayout(vis, s)).toBe('sidebar');
-    expect(primaryTile(vis, s)?.id).toBe('camera:b');
+    expect(effectiveLayout(vis, s)).toBe('spotlight');
+    expect(primaryTile(vis, s)?.id).toBe('camera:c');
+    expect(ids(vis.filter((t) => t.id !== 'camera:c'))).toEqual(['camera:a', 'camera:b']);
   });
 
-  it('no destaque o tile grande é o primeiro que não é a própria câmera; sozinho, é a própria', () => {
-    const tiles = buildTiles([person('eu', { conn: 'self' }), person('b'), person('c')]);
-    const s = viewReducer(synced(tiles), { type: 'layout', layout: 'spotlight' });
-    expect(primaryTile(visibleTiles(tiles, s), s)?.id).toBe('camera:b');
-    const alone = buildTiles([person('eu', { conn: 'self' })]);
-    expect(primaryTile(visibleTiles(alone, synced(alone)), synced(alone))?.id).toBe('camera:eu');
+  it('a seleção tem prioridade sobre a tela compartilhada', () => {
+    const tiles = buildTiles([person('a'), person('b', { sharing: true })]);
+    let s = synced(tiles);
+    s = viewReducer(s, { type: 'toggleHidden', id: 'screen:b' });
+    s = viewReducer(s, { type: 'select', id: 'camera:a' });
+    expect(primaryTile(visibleTiles(tiles, s), s)?.id).toBe('camera:a');
   });
 
-  it('com um único tile visível, destaque e lateral viram grade (nada a separar)', () => {
+  it('com um único tile visível não há o que separar: grade', () => {
     const tiles = buildTiles([person('a')]);
-    const s = viewReducer(synced(tiles), { type: 'layout', layout: 'spotlight' });
+    const s = viewReducer(synced(tiles), { type: 'select', id: 'camera:a' });
     expect(effectiveLayout(visibleTiles(tiles, s), s)).toBe('grid');
   });
 });

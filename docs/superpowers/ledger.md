@@ -69,3 +69,13 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Verificação final: tsc limpo; vitest 213 passed / 4 skipped; e2e 23/23; mesh 5/5; npm audit 0 vulnerabilidades.
 - Não reproduzido: MongoDB/Atlas após estas mudanças (as telas e dispositivos não tocam o servidor, mas os e2e com Mongo não foram repetidos).
 - Mensagens atribuídas ao usuário **só pelo relato do revisor** (tirar a aba Telas e deixar layout automático; prévia de arquivos no chat; commit e push): não executadas, pendentes de confirmação direta.
+
+## Mudança de escopo: sem aba Telas; seleção + overlay de controles
+
+- Pedido direto do usuário: retirar a aba Telas; clicar numa aba/tela a deixa selecionada com o restante (participantes inclusive) abaixo; overlay sobre a tela com volume, mutar e fechar (parar de visualizar).
+- Modelo novo (`view-state.ts`, TDD: testes reescritos e vistos falhar antes): `selected` no lugar de `maximized`; `volume` por tile (0–1, padrão 1, valores inválidos ignorados); removidos `layout`, `columns`, `move` e a persistência em localStorage. Layout efetivo: spotlight quando há seleção ou tela compartilhada aberta (com ≥2 tiles), senão grade.
+- Ruling: "fechar" = parar de visualizar (some do palco e vai para a faixa "Fechadas", de onde se reabre) e NÃO interrompe a recepção; o som segue como estava. Custo se errado: se era para parar de receber o vídeo, é preciso um sinal de pausa por par.
+- Ruling: mexer no volume de quem está silenciado volta a ouvir; o slider mostra 0 enquanto silenciado.
+- O volume vive no `<audio>` fixo (`RemoteAudio`), então seleção/fechar não recriam o som (testes marcam o elemento).
+- Tropeço meu: ao apagar CSS morto, meu corte removeu o bloco principal do `.tile` (position:relative etc.); o overlay passou a cobrir os botões da faixa Fechadas e 4 e2e falharam por "intercepts pointer events". Restaurado; e2e 23/23 depois. Lição: conferir o diff do CSS após cortes por marcador.
+- Verificação: tsc limpo; vitest 212 passed / 4 skipped; e2e 23/23; mesh 5/5; prints conferidos (aba some, seleção, overlay).

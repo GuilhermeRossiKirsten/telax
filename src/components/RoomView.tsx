@@ -164,9 +164,6 @@ export function RoomView({ room, name }: { room: string; name: string }) {
           <SidePanel
             tab={tab}
             onTab={setTab}
-            tiles={screens.tiles}
-            view={screens.view}
-            onView={screens.dispatch}
             participants={r.participants}
             messages={r.messages}
             files={r.files}

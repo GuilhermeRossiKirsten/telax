@@ -8,10 +8,11 @@ intermedeia a sinalização, a presença e o chat.
 - Lista de participantes com estado de conexão (Conectando / Conectado / Reconectando / Falhou)
 - **Reiniciar conexões**: renegocia todos os pares sem ninguém sair da sala
 - Reconexão automática de pares e do canal de sinalização
-- **Controle das telas (só para quem o faz):** ocultar a imagem, silenciar o som, reordenar, clicar para
-  maximizar (Esc restaura) e escolher o layout (automático, grade com 1–4 colunas, destaque ou lateral)
-  na aba **Telas** do painel. Telas compartilhadas por outras pessoas entram ocultas e silenciadas: cada
-  um mostra e ativa o som da que quer
+- **Controle das telas (só para quem o faz):** clique numa tela para **selecioná-la**: ela fica grande e as
+  demais, participantes inclusive, ficam numa faixa embaixo (clique de novo ou Esc solta). Um overlay sobre cada
+  tela, ao passar o mouse, controla o **volume**, **silenciar**, destacar e **fechar** (parar de visualizar; a faixa
+  "Fechadas" traz de volta). Telas compartilhadas por outras pessoas entram fechadas e silenciadas: cada um abre e
+  ativa o som da que quer
 - **Compartilhar o som da aba:** ao compartilhar uma aba, marque "Compartilhar áudio da guia" no seletor
   do navegador; o som vai numa faixa própria, separada do microfone
 - **Configurações:** escolha do microfone e da saída de áudio (fone ou alto-falante), lembradas no
@@ -109,7 +110,7 @@ seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o b
 - **Mídia sem renegociar:** o offerer cria 4 transceivers (áudio do microfone, vídeo da câmera, vídeo da
   tela e áudio da tela/aba) e quem responde adota os criados pela offer, na mesma ordem; ligar/desligar
   câmera, microfone e tela, e trocar de microfone, é `replaceTrack`, sem nova negociação.
-- **Telas e dispositivos são decisões locais:** ocultar, silenciar, reordenar, maximizar, layout e
+- **Telas e dispositivos são decisões locais:** fechar, silenciar, volume, seleção e
   dispositivos de áudio ficam no navegador de cada pessoa (`src/lib/view-state.ts`, um reducer puro); nada
   disso passa pelo servidor nem muda para os outros.
 - **Reinício global:** o botão incrementa um número de geração (`gen`) no servidor e avisa todos.
@@ -149,7 +150,6 @@ seguidas em 30 s ele desiste e mostra "Não foi possível manter a sala" com o b
 - O **som da aba** só existe se o navegador o entregar (Chrome/Edge, ao compartilhar uma aba ou, no Windows, a
   tela inteira, com a caixa de áudio marcada); janelas e o Safari costumam não oferecer. Não há mixagem: o som
   da aba e o microfone viajam em faixas separadas.
-- A reordenação das telas é por botões (subir/descer), não por arrastar e soltar.
 - Um erro de join diferente de "sala cheia" (por exemplo, 500 do servidor) aparece como
   "Reconectando" e o app segue tentando; não há tela de erro dedicada.
 
@@ -175,11 +175,11 @@ Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium d
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 213 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 212 passaram, 4 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
 | Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (23 cenários, incluindo mutados ao entrar, ocultar/silenciar/maximizar/layout, som da aba e dispositivos), 1 execução, store em memória | `npx playwright test` | 23 passaram |
+| E2E, 2 participantes (23 cenários, incluindo mutados ao entrar, fechar/silenciar/volume/selecionar, som da aba e dispositivos), 1 execução, store em memória | `npx playwright test` | 23 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |
@@ -206,7 +206,7 @@ src/server/      RoomStore (interface), MemoryRoomStore, MongoRoomStore, escolha
 src/app/api/     rotas de sinalização (join, events, signal, chat, state, restart, leave)
 src/lib/         cliente de sinalização, PeerManager, regras de negociação, arquivos, validação, view-state (exibição das telas), devices (dispositivos de áudio)
 src/hooks/       useLocalMedia (câmera/mic/tela/som da aba), useRoom (sala + mesh), useViewState, useDevices
-src/components/  JoinForm, RoomView, VideoGrid, VideoTile, SidePanel (aba Telas), ControlBar, SettingsDialog
+src/components/  JoinForm, RoomView, VideoGrid, VideoTile, SidePanel, ControlBar, SettingsDialog
 e2e/             testes Playwright
 docs/superpowers/  spec, plano e ledger do desenvolvimento
 ```

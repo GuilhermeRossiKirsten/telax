@@ -252,7 +252,7 @@ button.ghost:hover {
   flex-direction: column;
   gap: 10px;
 }
-/* telas ocultas pelo usuário: um botão para trazer cada uma de volta */
+/* telas fechadas pelo usuário: um botão para trazer cada uma de volta */
 .shelf {
   display: flex;
   flex-wrap: wrap;
@@ -282,20 +282,9 @@ button.ghost:hover {
 .tiles[data-layout='grid'][data-count='2'] {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
 }
-/* número de colunas escolhido no painel */
-.tiles[data-layout='grid'][data-columns] {
-  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
-}
-.tiles[data-layout='maximized'] {
-  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
-}
-
-/* destaque: um tile grande e os demais numa faixa embaixo; lateral: os demais numa coluna ao lado */
-.tiles[data-layout='spotlight'],
-.tiles[data-layout='sidebar'] {
-  display: flex;
-}
+/* destaque: o tile selecionado (ou a tela compartilhada) grande e todos os demais numa faixa embaixo */
 .tiles[data-layout='spotlight'] {
+  display: flex;
   flex-direction: column;
 }
 .tiles-primary {
@@ -311,44 +300,16 @@ button.ghost:hover {
   display: flex;
   gap: 10px;
   flex: none;
-}
-.tiles[data-layout='spotlight'] .tiles-rest {
   overflow-x: auto;
   height: 132px;
 }
-.tiles[data-layout='spotlight'] .tiles-rest .tile {
+.tiles-rest .tile {
   width: 200px;
-  flex: none;
-}
-.tiles[data-layout='sidebar'] .tiles-rest {
-  flex-direction: column;
-  overflow-y: auto;
-  width: 220px;
-}
-.tiles[data-layout='sidebar'] .tiles-rest .tile {
-  height: 124px;
   flex: none;
 }
 .tiles-rest:empty {
   display: none;
 }
-@media (max-width: 699px) {
-  /* sem largura para uma coluna lateral: vira faixa embaixo */
-  .tiles[data-layout='sidebar'] {
-    flex-direction: column;
-  }
-  .tiles[data-layout='sidebar'] .tiles-rest {
-    flex-direction: row;
-    overflow: auto hidden;
-    width: auto;
-    height: 132px;
-  }
-  .tiles[data-layout='sidebar'] .tiles-rest .tile {
-    width: 200px;
-    height: auto;
-  }
-}
-
 .tile {
   position: relative;
   margin: 0;
@@ -360,20 +321,27 @@ button.ghost:hover {
   overflow: hidden;
   display: grid;
   place-items: center;
-}
-.tile {
   cursor: pointer;
 }
-.tile[data-maximized='true'] {
-  cursor: zoom-out;
+.tile[data-selected='true'] {
+  border-color: var(--accent);
 }
+
+/* overlay de controles sobre a imagem: volume, silenciar, destacar e fechar */
 .tile-actions {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 2;
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
+  padding: 8px;
+  background: linear-gradient(to bottom, rgba(26, 31, 26, 0.85), transparent);
+  cursor: default;
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -386,22 +354,37 @@ button.ghost:hover {
     opacity: 1;
   }
 }
-.tile-btn,
-.icon-mini {
+.tile-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.tile-actions input[type='range'] {
+  width: 96px;
+  height: 24px;
   padding: 0;
-  display: grid;
-  place-items: center;
-  background: var(--overlay);
-  border: 1px solid var(--border);
-  color: var(--text);
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.tiles-rest .tile-actions input[type='range'] {
+  width: 56px;
 }
 .tile-btn {
   width: 30px;
   height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--overlay);
+  border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--text);
 }
 .tile-btn:hover,
-.icon-mini:hover:not(:disabled) {
+.tile-btn[aria-pressed='true'] {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -574,46 +557,6 @@ button.ghost:hover {
   border: 1px solid var(--border);
 }
 
-/* aba "Telas" do painel */
-.tiles-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.field select {
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font: inherit;
-}
-.field select:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-.icon-mini {
-  width: 28px;
-  height: 28px;
-  flex: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-}
-.icon-mini[aria-pressed='true'] {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.list li[data-hidden] .grow {
-  opacity: 0.6;
-}
 .avatar-sm {
   width: 28px;
   height: 28px;
