@@ -395,7 +395,7 @@ export class MongoRoomStore implements RoomStore {
               $filter: {
                 input: { $objectToArray: { $ifNull: ['$peers', {}] } },
                 as: 'p',
-                cond: { $and: [{ $gte: ['$p.v.lastSeen', { $literal: limit }] }, { $ne: ['$p.v.observer', true] }] },
+                cond: { $and: [{ $gte: ['$$p.v.lastSeen', { $literal: limit }] }, { $ne: ['$$p.v.observer', true] }] },
               },
             },
           },
