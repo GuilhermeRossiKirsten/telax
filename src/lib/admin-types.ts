@@ -39,6 +39,8 @@ export type AdminRoomSummary = {
   lastActivity: number;
   closed: boolean;
   closedReason?: string;
+  /** a sala exige senha para entrar (só o estado: o admin nunca vê a senha) */
+  passwordProtected: boolean;
 };
 
 export type AdminRoomDetail = AdminRoomSummary & { peers: AdminPeer[] };

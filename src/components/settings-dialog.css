@@ -165,3 +165,14 @@
   color: var(--text);
   line-height: 1.4;
 }
+
+/* ---------- seção "Sala" (senha) ---------- */
+.sd-field input {
+  width: 100%;
+}
+
+.sd-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

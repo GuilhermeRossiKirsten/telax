@@ -4,6 +4,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { useDevices } from '@/hooks/use-devices';
 import type { QualityApi } from '@/hooks/use-quality';
 import type { SoundsApi } from '@/hooks/use-sounds';
+import { RoomPasswordSection, type RoomPasswordControls } from './RoomPasswordSection';
 import { TransmissionSettings } from './TransmissionSettings';
 import './settings-dialog.css';
 
@@ -17,11 +18,13 @@ type Props = {
   inUse: { camera: string; screen: string };
   participants: number;
   sharing: boolean;
+  /** Seção "Sala" (senha); sem isto a seção não aparece. */
+  roomPassword?: RoomPasswordControls;
 };
 
 const FOCUSABLE = 'select:not(:disabled), button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function SettingsDialog({ open, onClose, devices, sounds, quality, inUse, participants, sharing }: Props) {
+export function SettingsDialog({ open, onClose, devices, sounds, quality, inUse, participants, sharing, roomPassword }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const micField = useRef<HTMLSelectElement>(null);
   const micId = useId();
@@ -137,6 +140,8 @@ export function SettingsDialog({ open, onClose, devices, sounds, quality, inUse,
         </div>
 
         <TransmissionSettings api={quality} inUse={inUse} participants={participants} sharing={sharing} />
+
+        {roomPassword && <RoomPasswordSection {...roomPassword} />}
         </div>
 
         <footer className="sd-actions">

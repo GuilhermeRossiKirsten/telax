@@ -1,4 +1,6 @@
 import type { RemovalReason } from './admin-types';
+import { lockFromResponse, mapPasswordResult, type LockReason, type PasswordResult } from './room-password';
+import { clearRoomPassword, loadRoomPassword, saveRoomPassword } from './room-password-store';
 import type { PeerInfo, PeerMediaState, RoomEvent, SignalData } from './types';
 
 /** Espera mínima entre polls quando o servidor NÃO segurou a resposta (servidor antigo, ou erro rápido). */
@@ -18,13 +20,24 @@ export const REJOIN_WINDOW_MS = 30_000;
 /**
  * `blocked`: a entrada foi recusada pelo administrador (banido ou sala encerrada). `removed`: o administrador removeu
  * quem já estava na sala (expulso, banido ou sala encerrada). Nos dois casos o cliente PARA e nunca reentra sozinho.
+ * `locked`: a sala exige senha (ou a senha estava errada, ou há tentativas demais). O cliente PARA, sem laço, e só
+ * tenta de novo quando a interface chama `retryJoin(senha)`.
  */
-export type SignalingStatus = 'connecting' | 'online' | 'reconnecting' | 'full' | 'error' | 'blocked' | 'removed';
+export type SignalingStatus =
+  | 'connecting'
+  | 'online'
+  | 'reconnecting'
+  | 'full'
+  | 'error'
+  | 'blocked'
+  | 'removed'
+  | 'locked';
 
 /** O motivo do fim "terminal" (tipo discriminado), entregue a `onEnded` antes do status mudar. */
 export type SignalingEnd =
   | { kind: 'blocked'; reason: 'banned' | 'closed'; detail?: string }
-  | { kind: 'removed'; reason: RemovalReason; detail?: string };
+  | { kind: 'removed'; reason: RemovalReason; detail?: string }
+  | { kind: 'locked'; reason: LockReason; retryAfter?: number };
 
 const REMOVAL_REASONS: ReadonlyArray<RemovalReason> = ['kicked', 'banned', 'closed'];
 
@@ -57,13 +70,15 @@ export type JoinResult = {
   participants: PeerInfo[];
   gen: number;
   iceServers: RTCIceServer[];
+  /** A sala tem senha agora (o servidor informa no join; depois vale o evento `room`). */
+  protected: boolean;
 };
 
 export type SignalingHandlers = {
   onJoined(result: JoinResult, isRejoin: boolean): void;
   onEvent(event: RoomEvent): void;
   onStatus(status: SignalingStatus): void;
-  /** Fim terminal (bloqueado/removido pelo admin) com o motivo; chamado ANTES de `onStatus('blocked' | 'removed')`. */
+  /** Fim (bloqueado/removido pelo admin, ou trancado por senha) com o motivo; chamado ANTES de `onStatus`. */
   onEnded?(end: SignalingEnd): void;
 };
 
@@ -74,6 +89,10 @@ type Options = SignalingHandlers & {
   deviceId?: string;
   /** Entrar como observador (o administrador vendo a sala); o servidor só aceita com sessão de admin. */
   observer?: boolean;
+  /** Senha da sala já conhecida; sem ela vale a guardada na aba (`sessionStorage`). Observador nunca manda senha. */
+  password?: string;
+  /** Onde a senha digitada fica guardada (testes); o padrão é o `sessionStorage` da aba. */
+  passwordStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   fetch?: typeof fetch;
   pollMs?: number;
 };
@@ -93,6 +112,12 @@ export function createSignalingClient(opts: Options) {
   let stopped = false;
   /** O administrador encerrou o nosso acesso: nada mais é consultado, enviado nem reentrado. */
   let ended = false;
+  /** A sala pediu senha: nada é consultado nem reentrado até `retryJoin`. Diferente de `ended`, tem volta. */
+  let locked = false;
+  /** Senha usada no join (e na reentrada depois de um 410). O observador do admin ignora a senha. */
+  let password: string | undefined = opts.observer
+    ? undefined
+    : (opts.password ?? loadRoomPassword(opts.room, opts.passwordStorage));
   let status: SignalingStatus | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** Controlador do poll em andamento: stop() e leave() o cancelam na hora (um poll pode estar pendurado por até 8 s). */
@@ -118,6 +143,16 @@ export function createSignalingClient(opts: Options) {
     setStatus(info.kind);
   }
 
+  /** Trancado por senha: para tudo (sem laço), avisa o motivo e muda o status. Tem volta, por `retryJoin`. */
+  function lock(info: Extract<SignalingEnd, { kind: 'locked' }>) {
+    locked = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    if (stopped) return;
+    opts.onEnded?.(info);
+    setStatus('locked');
+  }
+
   /** Devolve false se a sala está cheia, o acesso foi bloqueado ou deu erro (polling deve parar). */
   async function join(): Promise<boolean> {
     // Sem AbortSignal de propósito: abortar um join em voo deixaria um participante fantasma
@@ -126,15 +161,26 @@ export function createSignalingClient(opts: Options) {
       name: opts.name,
       ...(opts.deviceId ? { deviceId: opts.deviceId } : {}),
       ...(opts.observer ? { observer: true } : {}),
+      ...(password ? { password } : {}),
     };
     const res = await doFetch(`${base}/join`, { method: 'POST', body: JSON.stringify(joinBody) });
     if (res.status === 409) {
       if (!stopped) setStatus('full');
       return false;
     }
-    if (res.status === 403) {
-      // 403 com motivo = o administrador nos barrou; qualquer outro 403 (ex.: observador sem sessão) é erro definitivo
+    if (res.status === 403 || res.status === 429) {
       const body = await readJson(res);
+      // trancado por senha (ou tentativas demais): o usuário precisa digitar; nada de laço de novas tentativas
+      const lockInfo = lockFromResponse(res.status, body, res.headers.get('Retry-After'));
+      if (lockInfo) {
+        if (lockInfo.reason === 'wrong_password') {
+          password = undefined;
+          clearRoomPassword(opts.room, opts.passwordStorage);
+        }
+        lock({ kind: 'locked', ...lockInfo });
+        return false;
+      }
+      // 403 com motivo = o administrador nos barrou; qualquer outro 403 (ex.: observador sem sessão) é erro definitivo
       if (body?.error === 'banned') end({ kind: 'blocked', reason: 'banned' });
       else if (body?.error === 'room_closed') {
         const detail = typeof body.reason === 'string' && body.reason ? body.reason : undefined;
@@ -143,7 +189,11 @@ export function createSignalingClient(opts: Options) {
       return false;
     }
     if (!res.ok) throw new Error(`join ${res.status}`);
-    const body = (await res.json()) as JoinResult & { cursor: number; token: string };
+    const body = (await res.json()) as Omit<JoinResult, 'protected'> & {
+      cursor: number;
+      token: string;
+      protected?: unknown;
+    };
     if (stopped) {
       sendLeave(body.peerId, body.token);
       return true;
@@ -155,9 +205,16 @@ export function createSignalingClient(opts: Options) {
     hasJoined = true;
     failures = 0;
     lastPoll = null;
+    if (password) saveRoomPassword(opts.room, password, opts.passwordStorage);
     setStatus('online');
     opts.onJoined(
-      { peerId: body.peerId, participants: body.participants, gen: body.gen, iceServers: body.iceServers },
+      {
+        peerId: body.peerId,
+        participants: body.participants,
+        gen: body.gen,
+        iceServers: body.iceServers,
+        protected: body.protected === true,
+      },
       isRejoin,
     );
     return true;
@@ -227,7 +284,7 @@ export function createSignalingClient(opts: Options) {
   }
 
   function schedule() {
-    if (stopped || ended) return;
+    if (stopped || ended || locked) return;
     timer = setTimeout(tick, nextDelay());
   }
 
@@ -244,7 +301,7 @@ export function createSignalingClient(opts: Options) {
 
   async function tick() {
     timer = undefined;
-    if (stopped || ended) return;
+    if (stopped || ended || locked) return;
     if (await step()) schedule();
   }
 
@@ -293,6 +350,34 @@ export function createSignalingClient(opts: Options) {
       const res = await post('restart', {});
       if (!res.ok) throw new Error(`restart ${res.status}`);
       return ((await res.json()) as { gen: number }).gen;
+    },
+
+    /** Trancado por senha: tenta entrar de novo com a senha digitada (nada acontece se não estiver trancado). */
+    async retryJoin(next: string) {
+      if (!locked || stopped || ended) return;
+      locked = false;
+      password = next;
+      setStatus('connecting');
+      if (await step()) schedule();
+    },
+
+    /** Liga/troca (`set`) ou remove (`clear`) a senha da sala; só o anfitrião consegue (o servidor decide). */
+    async roomPassword(action: 'set' | 'clear', next?: string): Promise<PasswordResult> {
+      if (!peerId) return { ok: false, error: 'network' };
+      try {
+        const res = await doFetch(`${base}/password`, {
+          method: 'POST',
+          body: JSON.stringify({ peerId, token, action, ...(action === 'set' ? { password: next } : {}) }),
+        });
+        if (res.status === 410) {
+          const gone = await goneReason(res);
+          if (gone) end({ kind: 'removed', ...gone });
+          return { ok: false, error: 'network' };
+        }
+        return mapPasswordResult(res.status, await readJson(res));
+      } catch {
+        return { ok: false, error: 'network' };
+      }
     },
 
     /** Avisa o servidor que saímos; usa keepalive para sobreviver ao fechamento da aba. */

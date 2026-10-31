@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SignalData } from '@/lib/types';
+import type { PasswordRecord } from './room-password';
 import {
   BannedError,
   MAX_EVENTS,
@@ -436,6 +437,77 @@ export function describeRoomStore(
       });
     });
 
+    describe('preview da sala (tela inicial)', () => {
+      it('sala inexistente ou vazia = 0 pessoas e aberta', async () => {
+        expect(await store.roomPreview(room)).toEqual({ count: 0, closed: false, protected: false });
+      });
+
+      it('conta 1, 2 e 3 pessoas', async () => {
+        await store.join(room, 'Ana');
+        expect((await store.roomPreview(room)).count).toBe(1);
+        await store.join(room, 'Beto');
+        expect((await store.roomPreview(room)).count).toBe(2);
+        await store.join(room, 'Cris');
+        expect((await store.roomPreview(room)).count).toBe(3);
+      });
+
+      it('quem sai deixa de contar', async () => {
+        const a = await store.join(room, 'Ana');
+        await store.join(room, 'Beto');
+        await store.leave(room, a.peerId);
+        expect((await store.roomPreview(room)).count).toBe(1);
+      });
+
+      it('NÃO conta o observador (o administrador)', async () => {
+        await store.join(room, 'Ana');
+        await store.join(room, 'Administração', { observer: true });
+        expect((await store.roomPreview(room)).count).toBe(1);
+      });
+
+      it('só leitura: peer expirado pelo TTL deixa de contar SEM nenhuma escrita (sem varredura, sem leave, sem renovar lastSeen)', async () => {
+        const a = await store.join(room, 'Ana');
+        const b = await store.join(room, 'Beto');
+        now += 10_000;
+        await store.events(room, b.peerId, 0); // Beto renova; a Ana tem 10 s de silêncio (viva)
+        now += 10_000; // Ana: 20 s sem consultar (expirada); Beto: 10 s (vivo)
+        expect((await store.roomPreview(room)).count).toBe(1);
+
+        // a Ana continua expirada no armazenamento: a preview NÃO a varreu nem emitiu o leave dela
+        const visto = await store.peekEvents(room, b.peerId, 0);
+        expect(visto.events.some((e) => e.type === 'leave' && e.from === a.peerId)).toBe(false);
+
+        // e a preview não renova ninguém: Beto, que estava a 10 s, passa do TTL depois de mais 6 s mesmo com preview no meio
+        await store.roomPreview(room);
+        now += 6_000;
+        expect((await store.roomPreview(room)).count).toBe(0);
+        await rejects(() => store.peekEvents(room, b.peerId, 0)).toThrow(UnknownPeerError);
+      });
+
+      it('sala fechada pelo admin: closed true (e 0 pessoas); reaberta volta a false', async () => {
+        await store.join(room, 'Ana');
+        await store.closeRoom(room, 'manutenção');
+        expect(await store.roomPreview(room)).toEqual({ count: 0, closed: true, protected: false });
+        await store.reopenRoom(room);
+        expect(await store.roomPreview(room)).toEqual({ count: 0, closed: false, protected: false });
+      });
+
+      it('o resultado tem EXATAMENTE count, closed e protected: nada de nomes, ids, ips ou tokens', async () => {
+        const w = { ip: '203.0.113.77', deviceId: randomUUID() };
+        const a = await store.join(room, 'Fulana Secreta', w);
+        const preview = await store.roomPreview(room);
+        expect(Object.keys(preview).sort()).toEqual(['closed', 'count', 'protected']);
+        expect(preview.protected).toBe(false); // o sistema de senha ainda não existe
+        const texto = JSON.stringify(preview);
+        for (const segredo of ['Fulana Secreta', a.peerId, a.token, w.ip, w.deviceId]) expect(texto).not.toContain(segredo);
+      });
+
+      it('nome de sala com caracteres especiais é só um nome: não vira consulta nem erro', async () => {
+        for (const nome of ['$where', 'a.b', '{"$ne":1}', 'peers.x', '../x']) {
+          expect(await store.roomPreview(nome)).toEqual({ count: 0, closed: false, protected: false });
+        }
+      });
+    });
+
     describe('administração', () => {
       const uid = () => randomUUID();
       /** IP e dispositivo únicos por teste: no Mongo o banco é compartilhado entre os testes. */
@@ -803,6 +875,279 @@ export function describeRoomStore(
           now += PEER_TTL_MS + 1000;
           expect((await store.getRoom(room))?.peers.find((p) => p.id === a.peerId)).toBeUndefined();
           expect((await store.listRooms()).find((r) => r.name === room)?.peerCount ?? 0).toBe(0);
+        });
+      });
+    });
+
+    describe('senha da sala', () => {
+      const DAY = 24 * 60 * 60_000;
+      /** Registro de mentira: o store só guarda, quem hasheia e confere é a rota. */
+      const record = (tag = 'A'): PasswordRecord => ({
+        salt: Buffer.from(`SAL-${tag}-SECRETO`).toString('base64'),
+        hash: Buffer.from(`HASH-${tag}-SECRETO`).toString('base64'),
+        params: { N: 16384, r: 8, p: 1, keylen: 64 },
+      });
+
+      describe('anfitrião', () => {
+        it('é o participante mais antigo; só ele define a senha, os outros recebem not_host e nada muda', async () => {
+          const a = await store.join(room, 'Ana');
+          now += 1000;
+          const b = await store.join(room, 'Beto');
+          expect(await store.isRoomHost(room, a.peerId)).toBe(true);
+          expect(await store.isRoomHost(room, b.peerId)).toBe(false);
+          expect(await store.setRoomPassword(room, b.peerId, record())).toBe('not_host');
+          expect(await store.getRoomPassword(room)).toBeNull();
+          expect(await store.setRoomPassword(room, a.peerId, record())).toBe('ok');
+          expect(await store.getRoomPassword(room)).toEqual(record());
+        });
+
+        it('quando o anfitrião sai, o título passa à pessoa seguinte', async () => {
+          const a = await store.join(room, 'Ana');
+          now += 1000;
+          const b = await store.join(room, 'Beto');
+          now += 1000;
+          const c = await store.join(room, 'Cris');
+          await store.leave(room, a.peerId);
+          expect(await store.isRoomHost(room, b.peerId)).toBe(true);
+          expect(await store.isRoomHost(room, c.peerId)).toBe(false);
+          expect(await store.isRoomHost(room, a.peerId)).toBe(false);
+        });
+
+        it('empate no instante de entrada: o menor peerId é o anfitrião (todo mundo concorda)', async () => {
+          const a = await store.join(room, 'Ana');
+          const b = await store.join(room, 'Beto'); // mesmo `now`
+          const menor = a.peerId < b.peerId ? a.peerId : b.peerId;
+          const outro = menor === a.peerId ? b.peerId : a.peerId;
+          expect(await store.isRoomHost(room, menor)).toBe(true);
+          expect(await store.isRoomHost(room, outro)).toBe(false);
+        });
+
+        it('observador (admin) nunca é anfitrião, mesmo tendo entrado primeiro, e não consegue definir senha', async () => {
+          const obs = await store.join(room, 'admin', { observer: true });
+          now += 1000;
+          const a = await store.join(room, 'Ana');
+          expect(await store.isRoomHost(room, obs.peerId)).toBe(false);
+          expect(await store.isRoomHost(room, a.peerId)).toBe(true);
+          expect(await store.setRoomPassword(room, obs.peerId, record())).toBe('not_host');
+        });
+
+        it('quem expirou por TTL deixa de ser anfitrião', async () => {
+          const a = await store.join(room, 'Ana');
+          now += 1000;
+          const b = await store.join(room, 'Beto');
+          now += PEER_TTL_MS - 500; // Ana está a 15,5 s sem consultar (passou do TTL); Beto, a 14,5 s
+          await store.events(room, b.peerId, 0); // Beto renova
+          now += 1000;
+          expect(await store.isRoomHost(room, a.peerId)).toBe(false);
+          expect(await store.isRoomHost(room, b.peerId)).toBe(true);
+        });
+
+        it('peer desconhecido: isRoomHost false e setRoomPassword unknown_peer', async () => {
+          await store.join(room, 'Ana');
+          expect(await store.isRoomHost(room, randomUUID())).toBe(false);
+          expect(await store.setRoomPassword(room, randomUUID(), record())).toBe('unknown_peer');
+          expect(await store.setRoomPassword(`${room}-vazia`, randomUUID(), record())).toBe('unknown_peer');
+          expect(await store.getRoomPassword(room)).toBeNull();
+        });
+      });
+
+      describe('registro de senha', () => {
+        it('remover (null) apaga; sala sem senha devolve null', async () => {
+          const a = await store.join(room, 'Ana');
+          expect(await store.getRoomPassword(room)).toBeNull();
+          await store.setRoomPassword(room, a.peerId, record());
+          expect(await store.setRoomPassword(room, a.peerId, null)).toBe('ok');
+          expect(await store.getRoomPassword(room)).toBeNull();
+        });
+
+        it('trocar a senha substitui o registro', async () => {
+          const a = await store.join(room, 'Ana');
+          await store.setRoomPassword(room, a.peerId, record('A'));
+          await store.setRoomPassword(room, a.peerId, record('B'));
+          expect(await store.getRoomPassword(room)).toEqual(record('B'));
+        });
+
+        it('sobrevive à sala ficar vazia (recarregar a página do único participante não abre a sala)', async () => {
+          const a = await store.join(room, 'Ana');
+          await store.setRoomPassword(room, a.peerId, record());
+          await store.leave(room, a.peerId);
+          expect(await store.getRoomPassword(room)).toEqual(record());
+          expect(await store.roomPreview(room)).toEqual({ count: 0, closed: false, protected: true });
+        });
+
+        it('expira 24 h depois do último uso; entrar com sucesso renova', async () => {
+          const a = await store.join(room, 'Ana');
+          await store.setRoomPassword(room, a.peerId, record());
+          await store.leave(room, a.peerId);
+          now += DAY - 60_000;
+          expect(await store.getRoomPassword(room)).toEqual(record());
+          await store.passwordSucceeded(room, 'ip-1'); // renova: de novo 24 h
+          now += DAY - 60_000;
+          expect(await store.getRoomPassword(room)).toEqual(record());
+          now += 120_000; // 24 h + 1 min sem uso
+          expect(await store.getRoomPassword(room)).toBeNull();
+          expect((await store.roomPreview(room)).protected).toBe(false);
+        });
+
+        it('passwordSucceeded numa sala sem senha não cria nada', async () => {
+          await store.passwordSucceeded(room, 'ip-1');
+          expect(await store.getRoomPassword(room)).toBeNull();
+        });
+
+        it('salas diferentes não se misturam', async () => {
+          const a = await store.join(room, 'Ana');
+          const outra = `${room}-outra`;
+          const o = await store.join(outra, 'Otávio');
+          await store.setRoomPassword(room, a.peerId, record('A'));
+          expect(await store.getRoomPassword(outra)).toBeNull();
+          await store.setRoomPassword(outra, o.peerId, record('O'));
+          expect(await store.getRoomPassword(room)).toEqual(record('A'));
+          expect(await store.getRoomPassword(outra)).toEqual(record('O'));
+        });
+
+        it('a preview diz protected true com senha e false depois de remover, sem trocar mais nada', async () => {
+          const a = await store.join(room, 'Ana');
+          expect(await store.roomPreview(room)).toEqual({ count: 1, closed: false, protected: false });
+          await store.setRoomPassword(room, a.peerId, record());
+          expect(await store.roomPreview(room)).toEqual({ count: 1, closed: false, protected: true });
+          await store.setRoomPassword(room, a.peerId, null);
+          expect(await store.roomPreview(room)).toEqual({ count: 1, closed: false, protected: false });
+        });
+
+        it('a senha só vale para novas entradas: quem já estava continua autenticado e recebendo eventos', async () => {
+          const a = await store.join(room, 'Ana');
+          const b = await store.join(room, 'Beto');
+          const host = a.peerId < b.peerId ? a : b;
+          const outro = host === a ? b : a;
+          await store.setRoomPassword(room, host.peerId, record());
+          await expect((async () => store.authenticate(room, outro.peerId, outro.token))()).resolves.toBeUndefined();
+          await expect((async () => store.events(room, outro.peerId, 0))()).resolves.toBeDefined();
+        });
+      });
+
+      describe('evento room', () => {
+        it('vai a todos os não observadores (menos a quem definiu), com { protected }; ao remover, protected false', async () => {
+          const a = await store.join(room, 'Ana');
+          const b = await store.join(room, 'Beto');
+          const obs = await store.join(room, 'admin', { observer: true });
+          const host = a.peerId < b.peerId ? a : b;
+          const outro = host === a ? b : a;
+          await store.setRoomPassword(room, host.peerId, record());
+          await store.setRoomPassword(room, host.peerId, null);
+
+          const recebido = (await store.events(room, outro.peerId, 0)).events.filter((e) => e.type === 'room');
+          expect(recebido.map((e) => [e.from, e.payload])).toEqual([
+            [host.peerId, { protected: true }],
+            [host.peerId, { protected: false }],
+          ]);
+          expect((await store.events(room, host.peerId, 0)).events.some((e) => e.type === 'room')).toBe(false);
+          expect((await store.events(room, obs.peerId, 0)).events.some((e) => e.type === 'room')).toBe(false);
+        });
+
+        it('quem não é anfitrião não gera evento', async () => {
+          const a = await store.join(room, 'Ana');
+          now += 1000;
+          const b = await store.join(room, 'Beto');
+          await store.setRoomPassword(room, b.peerId, record());
+          expect((await store.events(room, a.peerId, 0)).events.some((e) => e.type === 'room')).toBe(false);
+        });
+      });
+
+      describe('segredos', () => {
+        it('hash e salt nunca aparecem em participants, eventos, preview nem no que o admin lê', async () => {
+          const a = await store.join(room, 'Ana');
+          const b = await store.join(room, 'Beto');
+          const host = a.peerId < b.peerId ? a : b;
+          const outro = host === a ? b : a;
+          const r = record('X');
+          await store.setRoomPassword(room, host.peerId, r);
+          const entrou = await store.join(room, 'Cris');
+          const tudo = JSON.stringify([
+            entrou.participants,
+            (await store.events(room, outro.peerId, 0)).events,
+            await store.roomPreview(room),
+            await store.listRooms(),
+            await store.getRoom(room),
+          ]);
+          for (const segredo of [r.hash, r.salt, 'SECRETO', 'HASH-X']) expect(tudo).not.toContain(segredo);
+        });
+
+        it('o admin vê só se a sala é protegida (passwordProtected), em listRooms e em getRoom', async () => {
+          const a = await store.join(room, 'Ana');
+          expect((await store.listRooms()).find((s) => s.name === room)!.passwordProtected).toBe(false);
+          expect((await store.getRoom(room))!.passwordProtected).toBe(false);
+          await store.setRoomPassword(room, a.peerId, record());
+          expect((await store.listRooms()).find((s) => s.name === room)!.passwordProtected).toBe(true);
+          expect((await store.getRoom(room))!.passwordProtected).toBe(true);
+          await store.setRoomPassword(room, a.peerId, null);
+          expect((await store.getRoom(room))!.passwordProtected).toBe(false);
+        });
+
+        it('sala fechada pelo admin continua mostrando se tem senha', async () => {
+          const a = await store.join(room, 'Ana');
+          await store.setRoomPassword(room, a.peerId, record());
+          await store.closeRoom(room);
+          expect((await store.getRoom(room))!.passwordProtected).toBe(true);
+        });
+      });
+
+      describe('limite de tentativas', () => {
+        it('consultar a trava não conta: sem erros nunca tranca', async () => {
+          for (let i = 0; i < 20; i++) expect(await store.passwordThrottle(room, 'ip-1')).toEqual({ locked: false, retryAfterMs: 0 });
+        });
+
+        it('5 erros do mesmo IP trancam por 5 min; outro IP segue livre; destranca com o tempo', async () => {
+          for (let i = 0; i < 4; i++) expect((await store.passwordFailed(room, 'ip-1')).locked).toBe(false);
+          const quinto = await store.passwordFailed(room, 'ip-1');
+          expect(quinto.locked).toBe(true);
+          expect(quinto.retryAfterMs).toBeGreaterThan(0);
+          expect(quinto.retryAfterMs).toBeLessThanOrEqual(5 * 60_000);
+          expect((await store.passwordThrottle(room, 'ip-1')).locked).toBe(true);
+          expect((await store.passwordThrottle(room, 'ip-2')).locked).toBe(false);
+          now += 4 * 60_000;
+          const ainda = await store.passwordThrottle(room, 'ip-1');
+          expect(ainda.locked).toBe(true);
+          expect(ainda.retryAfterMs).toBeLessThanOrEqual(60_000);
+          now += 61_000;
+          expect(await store.passwordThrottle(room, 'ip-1')).toEqual({ locked: false, retryAfterMs: 0 });
+          // depois de destravar, o contador recomeça do zero (um erro só não tranca de novo)
+          expect((await store.passwordFailed(room, 'ip-1')).locked).toBe(false);
+        });
+
+        it('acertar zera o contador do IP', async () => {
+          for (let i = 0; i < 4; i++) await store.passwordFailed(room, 'ip-1');
+          await store.passwordSucceeded(room, 'ip-1');
+          for (let i = 0; i < 4; i++) expect((await store.passwordFailed(room, 'ip-1')).locked).toBe(false);
+        });
+
+        it('erros antigos (fora da janela de 10 min) deixam de contar', async () => {
+          for (let i = 0; i < 4; i++) await store.passwordFailed(room, 'ip-1');
+          now += 10 * 60_000 + 1000;
+          for (let i = 0; i < 4; i++) expect((await store.passwordFailed(room, 'ip-1')).locked).toBe(false);
+        });
+
+        it('50 erros na sala (de IPs diferentes) trancam todo mundo por 1 min', async () => {
+          for (let i = 0; i < 49; i++) expect((await store.passwordFailed(room, `ip-${i}`)).locked).toBe(false);
+          expect((await store.passwordFailed(room, 'ip-49')).locked).toBe(true);
+          const novo = await store.passwordThrottle(room, 'ip-novo');
+          expect(novo.locked).toBe(true);
+          expect(novo.retryAfterMs).toBeGreaterThan(0);
+          expect(novo.retryAfterMs).toBeLessThanOrEqual(60_000);
+          now += 61_000;
+          expect((await store.passwordThrottle(room, 'ip-novo')).locked).toBe(false);
+        });
+
+        it('a trava é por sala: outra sala com o mesmo IP segue livre', async () => {
+          for (let i = 0; i < 5; i++) await store.passwordFailed(room, 'ip-1');
+          expect((await store.passwordThrottle(room, 'ip-1')).locked).toBe(true);
+          expect((await store.passwordThrottle(`${room}-outra`, 'ip-1')).locked).toBe(false);
+        });
+
+        it('chave estranha (símbolos de operador, vazia, enorme) é só um texto', async () => {
+          for (const k of ['$ne', 'a.b', '{"$gt":""}', '', 'x'.repeat(500)]) {
+            expect((await store.passwordFailed(room, k)).locked).toBe(false);
+            expect((await store.passwordThrottle(room, k)).locked).toBe(false);
+          }
         });
       });
     });

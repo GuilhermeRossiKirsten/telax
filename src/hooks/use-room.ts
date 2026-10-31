@@ -6,6 +6,14 @@ import type { AdminCommand, RemovalReason } from '@/lib/admin-types';
 import { getDeviceId } from '@/lib/device-id';
 import { PeerManager, type ConnState, type LocalTracks, type SendQuality } from '@/lib/peer-manager';
 import { MAX_SCREENS } from '@/lib/screens';
+import {
+  computeIsHost,
+  roomNoticeFor,
+  type LockReason,
+  type PasswordResult,
+  type RoomNotice,
+} from '@/lib/room-password';
+import { clearRoomPassword, saveRoomPassword } from '@/lib/room-password-store';
 import { createSignalBatcher } from '@/lib/signal-batcher';
 import { createSignalingClient, type SignalingStatus } from '@/lib/signaling-client';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, SignalData } from '@/lib/types';
@@ -13,6 +21,8 @@ import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, SignalData } fro
 export type Participant = PeerInfo & { conn: ConnState | 'self' };
 /** `screens` tem sempre MAX_SCREENS streams estáveis (um por slot de tela, cada um com [vídeo, som da aba]). */
 export type RemoteStreams = { camera: MediaStream; screens: MediaStream[] };
+/** Sala trancada por senha: o motivo e, quando há espera, o instante (ms) em que dá para tentar de novo. */
+export type RoomLock = { reason: LockReason; until?: number };
 export type ChatMessage = { id: string; from: string; name: string; text: string; at: number };
 export type RoomFile = {
   id: string;
@@ -75,6 +85,9 @@ export function useRoom(args: {
   const [adminMessage, setAdminMessage] = useState<{ text: string; at: number } | null>(null);
   const [removed, setRemoved] = useState<{ reason: RemovalReason; detail?: string } | null>(null);
   const [blocked, setBlocked] = useState<{ reason: 'banned' | 'closed'; detail?: string } | null>(null);
+  const [locked, setLocked] = useState<RoomLock | null>(null);
+  const [roomProtected, setRoomProtected] = useState(false);
+  const [roomNotice, setRoomNotice] = useState<RoomNotice | null>(null);
 
   const clientRef = useRef<ReturnType<typeof createSignalingClient> | null>(null);
   const managerRef = useRef<PeerManager | null>(null);
@@ -136,12 +149,17 @@ export function useRoom(args: {
       onStatus: (s) => {
         if (disposed) return;
         // sem sinalização (ou sem acesso, para o admin) não há como manter os pares: solta as conexões em vez de deixá-las órfãs
-        if (s === 'error' || s === 'blocked' || s === 'removed') managerRef.current?.close();
+        if (s === 'error' || s === 'blocked' || s === 'removed' || s === 'locked') managerRef.current?.close();
         setStatus(s);
       },
       onEnded: (end) => {
         if (disposed) return;
-        if (end.kind === 'removed') setRemoved({ reason: end.reason, ...(end.detail ? { detail: end.detail } : {}) });
+        if (end.kind === 'locked') {
+          setLocked({
+            reason: end.reason,
+            ...(end.retryAfter !== undefined ? { until: Date.now() + end.retryAfter * 1000 } : {}),
+          });
+        } else if (end.kind === 'removed') setRemoved({ reason: end.reason, ...(end.detail ? { detail: end.detail } : {}) });
         else setBlocked({ reason: end.reason, ...(end.detail ? { detail: end.detail } : {}) });
       },
 
@@ -155,6 +173,9 @@ export function useRoom(args: {
         }
         selfRef.current = result.peerId;
         setSelfId(result.peerId);
+        setLocked(null);
+        setRoomProtected(result.protected);
+        setRoomNotice(null);
         setPeers(Object.fromEntries(result.participants.map((p) => [p.id, p])));
 
         const manager = new PeerManager({
@@ -228,6 +249,14 @@ export function useRoom(args: {
           case 'signal':
             manager?.handleSignal(e.from, e.payload as SignalData).catch(noop);
             break;
+          case 'room': {
+            // só os participantes recebem; o payload vem do servidor, mas confere o formato antes de usar
+            const next = (e.payload as { protected?: unknown } | null)?.protected;
+            if (typeof next !== 'boolean') break;
+            setRoomProtected(next);
+            if (!observerRef.current) setRoomNotice(roomNoticeFor(next, e.from === selfRef.current));
+            break;
+          }
           case 'restart':
             manager?.restartAll((e.payload as { gen: number }).gen);
             break;
@@ -307,6 +336,27 @@ export function useRoom(args: {
     }
   }, []);
 
+  /** Sala trancada: tenta entrar de novo com a senha digitada (o cliente de sinalização guarda a que funcionar). */
+  const retryWithPassword = useCallback((password: string) => {
+    void clientRef.current?.retryJoin(password);
+  }, []);
+
+  /** Só o anfitrião consegue (o servidor decide); em caso de sucesso a senha fica guardada nesta aba para reentradas. */
+  const setRoomPassword = useCallback(
+    async (action: 'set' | 'clear', password?: string): Promise<PasswordResult> => {
+      const client = clientRef.current;
+      if (!client) return { ok: false, error: 'network' };
+      const result = await client.roomPassword(action, password);
+      if (result.ok) {
+        setRoomProtected(result.protected);
+        if (action === 'set' && password) saveRoomPassword(room, password);
+        else clearRoomPassword(room);
+      }
+      return result;
+    },
+    [room],
+  );
+
   const restart = useCallback(async () => {
     try {
       const gen = await clientRef.current?.restart();
@@ -327,6 +377,9 @@ export function useRoom(args: {
     return me && !observer ? [{ ...me, ...media, conn: 'self' }, ...others] : others;
   }, [peers, conn, selfId, media, observer]);
 
+  // o anfitrião é a pessoa mais antiga (o servidor confere de novo em cada pedido); o observador nunca é
+  const isHost = useMemo(() => computeIsHost(Object.values(peers), selfId), [peers, selfId]);
+
   const observerPresent = useMemo(() => Object.values(peers).some((p) => p.observer && p.id !== selfId), [peers, selfId]);
 
   return {
@@ -342,6 +395,13 @@ export function useRoom(args: {
     dismissAdminMessage: () => setAdminMessage(null),
     removed,
     blocked,
+    locked,
+    roomProtected,
+    isHost,
+    roomNotice,
+    dismissRoomNotice: () => setRoomNotice(null),
+    retryWithPassword,
+    setRoomPassword,
     dismissError: () => setError(null),
     sendChat,
     sendFile,

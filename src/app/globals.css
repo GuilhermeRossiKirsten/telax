@@ -1010,3 +1010,33 @@ ul[data-testid='participants'] .row-volume input[type='range'] {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent), 0 0 18px rgba(200, 245, 80, 0.25);
 }
+
+/* preview da sala na tela inicial: "esta sala já existe" e quantas pessoas estão nela */
+.room-preview {
+  margin: -6px 0 0;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--accent-soft);
+  border: 1px solid rgba(200, 245, 80, 0.35);
+  border-radius: 8px;
+}
+.room-preview::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.room-preview[data-tone='closed'] {
+  background: rgba(228, 0, 20, 0.12);
+  border-color: rgba(228, 0, 20, 0.45);
+}
+.room-preview[data-tone='closed']::before {
+  background: var(--danger);
+}

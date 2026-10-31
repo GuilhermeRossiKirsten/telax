@@ -126,6 +126,14 @@ export function RoomsTab({ api, onExpired }: Props) {
                           aberta
                         </span>
                       )}
+                      {r.passwordProtected && (
+                        <>
+                          {' '}
+                          <span className="adm-badge" data-tone="info" data-testid="badge-password">
+                            com senha
+                          </span>
+                        </>
+                      )}
                     </td>
                     <td className="adm-wrap">
                       <div className="adm-actions">

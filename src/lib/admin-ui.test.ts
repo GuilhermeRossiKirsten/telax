@@ -21,6 +21,7 @@ const room = (over: Partial<AdminRoomSummary> & { name: string }): AdminRoomSumm
   createdAt: 0,
   lastActivity: 0,
   closed: false,
+  passwordProtected: false,
   ...over,
 });
 

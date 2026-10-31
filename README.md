@@ -169,6 +169,8 @@ Tela `/admin` com login pelo GitHub (**só o seu usuário entra**): lista as sal
   os pares. Um par que não chega a `connected` em 20 s (por exemplo, offer perdida numa queda de
   rede) também é reaberto. Cada sessão de negociação tem um id (`sid`), então respostas e
   candidatos de uma sessão antiga são descartados e não contaminam a nova.
+- **Prévia da sala:** na tela inicial, ao digitar o nome de uma sala que já existe, aparece "Esta sala já existe: N pessoas na sala agora" (e se tem senha ou foi encerrada). É uma consulta pública `GET /api/rooms/:sala/preview` que devolve só `{count, closed, protected}`: nunca nomes, ids nem IP. Uma consulta por pausa na digitação, sem polling.
+- **Senha da sala:** pode ser ligada e desligada dentro da sala, em Configurações → Sala, pelo **anfitrião** (a pessoa mais antiga na sala; se ela sai, passa à seguinte). Vale só para quem entrar depois: quem já está dentro continua e recebe um aviso. A senha tem de 4 a 64 caracteres, nunca vai na URL (fica na aba, em `sessionStorage`, para recarregar sem pedir de novo) e o servidor guarda só sal e hash scrypt. Errar 5 vezes seguidas (mesmo IP, 10 min) tranca por 5 minutos (`429`). O observador do admin entra sem senha, e o painel mostra "com senha" na sala.
 - **Arquivos:** enviados em pedaços de 16 KB por um DataChannel P2P (com controle de fluxo), nunca
   passam pelo servidor.
 
@@ -219,15 +221,15 @@ O teste de 3 participantes está em `e2e-mesh/` e roda com `npx playwright test 
 
 ### O que foi executado
 
-Resultados da última verificação (28/10/2026, Windows 11, Node 24, Chromium do Playwright 1.64):
+Resultados da última verificação (31/10/2026, Windows 11, Node 24, Chromium do Playwright 1.64):
 
 | Verificação | Comando | Resultado |
 |---|---|---|
-| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 571 passaram, 5 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
-| Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam |
+| Unidade (store em memória, rotas, token, sinais, cliente, PeerManager, arquivos, view-state, dispositivos, captura de tela) | `npx vitest run` | 699 passaram, 5 pulados (os do MongoDB, sem `MONGODB_TEST_URI`), 0 falharam |
+| Unidade + contrato do store contra **MongoDB 7 real** (Docker local) | `MONGODB_TEST_URI=mongodb://127.0.0.1:27018 npx vitest run` | 189 passaram, 0 falharam na versão **anterior** à prévia e à senha da sala; **não repetido** depois (Docker desligado), então o lado Mongo da senha e da prévia não foi executado |
 | Tipos | `npx tsc --noEmit` | sem erros |
 | Build de produção | `npm run build` (feito pelo Playwright antes de subir o servidor) | ok |
-| E2E, 2 participantes (96 cenários, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 96 passaram |
+| E2E, 2 participantes (116 cenários, incluindo prévia da sala e senha da sala, incluindo mutados ao entrar, tile único com a tela no lugar do avatar, várias telas, formato original, tela cheia, fechar/silenciar/volume/selecionar, som da aba, dispositivos, rolagem das Configurações e transmissão (limites lidos do RTCRtpSender real)), 1 execução, store em memória | `npx playwright test` | 116 passaram |
 | E2E, 2 participantes, **store MongoDB** | `MONGODB_URI=mongodb://127.0.0.1:27018 npx playwright test` | 12 passaram na versão **anterior** às telas/dispositivos; **não repetido** depois |
 | E2E, 3 participantes (5 cenários), 1 execução, store em memória | `npx playwright test -c playwright.mesh.config.ts` | 5 passaram |
 | E2E, 3 participantes, **store MongoDB** | `MONGODB_URI=… npx playwright test -c playwright.mesh.config.ts` | 5 passaram na versão anterior; **não repetido** depois |

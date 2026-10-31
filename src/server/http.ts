@@ -9,6 +9,15 @@ export type Body = Record<string, unknown>;
 export const json = (body: unknown, status = 200) => Response.json(body, { status });
 export const invalid = () => json({ error: 'invalid' }, 400);
 
+/** Trancado por erros de senha: `retryAfter` em segundos, no corpo e no cabeçalho `Retry-After`. */
+export function tooManyAttempts(retryAfterMs: number): Response {
+  const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return new Response(JSON.stringify({ error: 'too_many_attempts', retryAfter }), {
+    status: 429,
+    headers: { 'content-type': 'application/json', 'retry-after': String(retryAfter) },
+  });
+}
+
 export const isString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 export const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 

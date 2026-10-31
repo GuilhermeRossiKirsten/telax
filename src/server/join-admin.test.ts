@@ -5,6 +5,7 @@ import { POST as join } from '@/app/api/rooms/[room]/join/route';
 import { POST as leave } from '@/app/api/rooms/[room]/leave/route';
 import { POST as restart } from '@/app/api/rooms/[room]/restart/route';
 import { POST as signal } from '@/app/api/rooms/[room]/signal/route';
+import { GET as preview } from '@/app/api/rooms/[room]/preview/route';
 import { POST as state } from '@/app/api/rooms/[room]/state/route';
 import { SESSION_COOKIE, signAdminSession } from './admin-auth';
 import { BannedError, RoomClosedError, RoomFullError, UnknownPeerError } from './room-store';
@@ -15,9 +16,10 @@ const DEVICE = '3f197123-2bf8-4730-aadf-6c61db50d59e';
 const JOINED = { peerId: 'p', token: 't', participants: [], cursor: 0, gen: 0 };
 const session = (login = 'dono') => `${SESSION_COOKIE}=${signAdminSession({ login, id: 1, exp: Date.now() + 3_600_000 }, SECRET)}`;
 
+const passwordMethods = ['getRoomPassword', 'setRoomPassword', 'isRoomHost', 'passwordThrottle', 'passwordFailed', 'passwordSucceeded'];
 const adminMethods = ['listRooms', 'getRoom', 'kick', 'closeRoom', 'reopenRoom', 'broadcast', 'command', 'ban', 'banPeer', 'listBans', 'unban'];
 const store = Object.fromEntries(
-  ['join', 'authenticate', 'events', 'peekEvents', 'signal', 'chat', 'setState', 'restart', 'leave', ...adminMethods].map((m) => [m, vi.fn()]),
+  ['join', 'authenticate', 'events', 'peekEvents', 'roomPreview', 'signal', 'chat', 'setState', 'restart', 'leave', ...passwordMethods, ...adminMethods].map((m) => [m, vi.fn()]),
 ) as Record<string, ReturnType<typeof vi.fn>>;
 const saved: Record<string, string | undefined> = {};
 
@@ -26,6 +28,7 @@ beforeEach(() => {
   Object.assign(process.env, ENV);
   for (const fn of Object.values(store)) fn.mockReset();
   store.join.mockResolvedValue(JOINED);
+  store.getRoomPassword.mockResolvedValue(null); // sala sem senha
   store.restart.mockResolvedValue(1);
   store.events.mockResolvedValue({ events: [], cursor: 0 });
   (globalThis as unknown as { __telaxStore?: unknown }).__telaxStore = store;
@@ -208,9 +211,96 @@ describe('ninguém comum cria evento de admin nem aciona métodos de admin', () 
     expect(touchedAdmin()).toEqual([]);
   });
 
+  it('o preview público da sala não aciona métodos de admin nem de escrita: só roomPreview', async () => {
+    store.roomPreview.mockResolvedValue({ count: 2, closed: false, protected: false });
+    const res = await preview(new Request('http://app.test/api/rooms/sala/preview'), ctx);
+    expect(res.status).toBe(200);
+    expect(store.roomPreview).toHaveBeenCalledTimes(1);
+    expect(touchedAdmin()).toEqual([]);
+    for (const m of ['join', 'authenticate', 'events', 'peekEvents', 'signal', 'chat', 'setState', 'restart', 'leave']) {
+      expect(store[m], m).not.toHaveBeenCalled();
+    }
+  });
+
   it('um `kind` de sinal que não existe (ex.: "command") é recusado', async () => {
     store.authenticate.mockResolvedValue(undefined);
     expect((await signal(post('signal', { ...auth, to: 'q', data: { gen: 0, kind: 'command', what: 'all' } }), ctx)).status).toBe(400);
     expect(store.signal).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /join em sala com senha (store falso: confere a ordem das chamadas)', () => {
+  const SENHA = 'ovo-de-pascoa-42';
+  const IP = { 'x-forwarded-for': '203.0.113.7' };
+
+  beforeEach(async () => {
+    const { hashPassword } = await import('./room-password');
+    store.getRoomPassword.mockResolvedValue(await hashPassword(SENHA));
+    store.roomPreview.mockResolvedValue({ count: 1, closed: false, protected: true });
+    store.passwordThrottle.mockResolvedValue({ locked: false, retryAfterMs: 0 });
+    store.passwordFailed.mockResolvedValue({ locked: false, retryAfterMs: 0 });
+  });
+
+  it('senha certa: confere a trava pelo (sala, IP), zera o contador e só então entra; a resposta diz protected:true', async () => {
+    const res = await doJoin({ name: 'Ana', password: SENHA }, IP);
+    expect(res.status).toBe(200);
+    expect((await res.json()).protected).toBe(true);
+    expect(store.passwordThrottle).toHaveBeenCalledWith('sala', '203.0.113.7');
+    expect(store.passwordSucceeded).toHaveBeenCalledWith('sala', '203.0.113.7');
+    expect(store.passwordFailed).not.toHaveBeenCalled();
+    expect(store.join).toHaveBeenCalledOnce();
+  });
+
+  it('sem senha: 403 password_required, sem contar erro e sem entrar', async () => {
+    const res = await doJoin({ name: 'Ana' }, IP);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'password_required' });
+    expect(store.passwordFailed).not.toHaveBeenCalled();
+    expect(store.join).not.toHaveBeenCalled();
+  });
+
+  it('senha errada: conta o erro do (sala, IP) e não entra', async () => {
+    const res = await doJoin({ name: 'Ana', password: 'errada-errada' }, IP);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'wrong_password' });
+    expect(store.passwordFailed).toHaveBeenCalledWith('sala', '203.0.113.7');
+    expect(store.passwordSucceeded).not.toHaveBeenCalled();
+    expect(store.join).not.toHaveBeenCalled();
+  });
+
+  it('trancado: 429 com Retry-After, sem nem olhar a senha (nem contar mais um erro) e sem entrar', async () => {
+    store.passwordThrottle.mockResolvedValue({ locked: true, retryAfterMs: 90_500 });
+    const res = await doJoin({ name: 'Ana', password: SENHA }, IP);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: 'too_many_attempts', retryAfter: 91 });
+    expect(res.headers.get('retry-after')).toBe('91');
+    expect(store.passwordFailed).not.toHaveBeenCalled();
+    expect(store.passwordSucceeded).not.toHaveBeenCalled();
+    expect(store.join).not.toHaveBeenCalled();
+  });
+
+  it('o observador do admin pula a senha e a trava', async () => {
+    const res = await doJoin({ name: 'admin', observer: true }, { ...IP, cookie: session() });
+    expect(res.status).toBe(200);
+    expect(store.passwordThrottle).not.toHaveBeenCalled();
+    expect(store.join).toHaveBeenCalledOnce();
+  });
+
+  it('sala fechada: segue direto para o store (que responde room_closed) em vez de pedir a senha', async () => {
+    store.roomPreview.mockResolvedValue({ count: 0, closed: true, protected: true });
+    const { RoomClosedError } = await import('./room-store');
+    store.join.mockRejectedValue(new RoomClosedError('manutenção'));
+    const res = await doJoin({ name: 'Ana' }, IP);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'room_closed', reason: 'manutenção' });
+    expect(store.passwordThrottle).not.toHaveBeenCalled();
+  });
+
+  it('sala sem senha: nenhuma chamada de senha além de ler o registro', async () => {
+    store.getRoomPassword.mockResolvedValue(null);
+    const res = await doJoin({ name: 'Ana' }, IP);
+    expect(res.status).toBe(200);
+    expect((await res.json()).protected).toBe(false);
+    for (const m of ['passwordThrottle', 'passwordFailed', 'passwordSucceeded', 'roomPreview']) expect(store[m]).not.toHaveBeenCalled();
   });
 });

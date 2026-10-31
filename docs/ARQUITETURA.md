@@ -189,7 +189,9 @@ O servidor é um conjunto de *route handlers* do Next.js (`src/app/api/rooms/[ro
 
 | Rota | Método | Autenticação | Função |
 |---|---|---|---|
-| `/join` | POST | — | Entra na sala; devolve `peerId`, `token`, participantes, `cursor`, `gen` e `iceServers`. `409 room_full` só se `MAX_PEERS` estiver definido e atingido. |
+| `/join` | POST | — (ou `password` se a sala tiver senha) | Entra na sala; devolve `peerId`, `token`, participantes, `cursor`, `gen`, `iceServers` e `protected`. `409 room_full` só se `MAX_PEERS` estiver definido e atingido. Sala com senha: `403 password_required` / `403 wrong_password` / `429 too_many_attempts` (com `Retry-After`). |
+| `/preview` | GET | — (pública) | Só `{count, closed, protected}`: a tela inicial mostra "Esta sala já existe: N pessoas…". Nunca nomes, ids nem IP. `no-store`. |
+| `/password` | POST | token + **anfitrião** | `{action:'set'|'clear', password?}`: liga, troca ou remove a senha. Só a pessoa mais antiga na sala (`403 not_host` para as outras). Senha de 4 a 64 caracteres. |
 | `/events` | GET (`peerId`, `token`, `since`, `wait`) | token | Entrega eventos novos desde o cursor e **renova o `lastSeen`** (é o "batimento" do peer). Com `wait` (até 8000 ms) o servidor **segura a resposta** até haver evento ou o prazo (espera longa). |
 | `/signal` | POST | token | Repassa SDP/ICE. Aceita um item (`to`, `data`) ou um **lote** `items` de 1 a 50, validado por inteiro antes de aplicar. |
 | `/chat` | POST | token | Mensagem para todos. |
@@ -197,7 +199,7 @@ O servidor é um conjunto de *route handlers* do Next.js (`src/app/api/rooms/[ro
 | `/restart` | POST | token | Reinício global de conexões (incrementa `gen`). |
 | `/leave` | POST | token | Sai da sala. |
 
-Respostas de erro: `400 invalid` (corpo inválido, até 128 KB), `409 room_full`, `410 gone` (peer ou token desconhecido, indistinguíveis de propósito).
+Respostas de erro: `400 invalid` (corpo inválido, até 128 KB), `403` (senha da sala), `429` (tentativas demais), `409 room_full`, `410 gone` (peer ou token desconhecido, indistinguíveis de propósito).
 
 ```mermaid
 flowchart LR
@@ -225,7 +227,7 @@ Interface assíncrona (`Awaitable<T>`) implementada por dois armazenamentos que 
 
 ### 4.2 Log de eventos de uma sala
 
-Cada operação relevante vira um evento com `seq` crescente: `join`, `leave`, `state`, `chat`, `signal`, `restart`. O cliente pede "tudo depois do meu cursor".
+Cada operação relevante vira um evento com `seq` crescente: `join`, `leave`, `state`, `chat`, `signal`, `restart`, `room` (senha ligada ou removida, payload `{protected}`, só para quem não é observador) e `admin`. O cliente pede "tudo depois do meu cursor".
 
 ```mermaid
 flowchart TB
@@ -294,6 +296,7 @@ erDiagram
 | Limpeza de salas | Sala vazia é apagada; índice **TTL** em `updatedAt` (1 h) apaga salas abandonadas. |
 | Eventos antigos | Saem do log depois de 5 min, além do limite de 500 (limita o tamanho do documento, teto de 16 MB). |
 | Conexões | `maxPoolSize: 5`, `maxIdleTimeMS: 10 s`: cada instância serverless abre o seu próprio pool, então ele é pequeno. |
+| Senha da sala | Coleção `room_passwords` (um registro por sala, `expireAt` com TTL de 24 h desde o último uso) e `room_password_attempts` (contadores de tentativas erradas, TTL pelo `expireAt`). O registro **sobrevive à sala ficar vazia**; só guarda sal e hash scrypt. |
 | Índice | `ensureIndexes()` roda na primeira criação do armazenamento; se falhar, o app segue (só a limpeza fica sem o TTL). |
 
 **Custo:** cada chamada à API faz de 1 a 3 idas ao banco. O polling de ~1 s por participante vira carga de leitura/escrita contínua no cluster.
@@ -406,6 +409,36 @@ sequenceDiagram
 ### 6.5 Arquivos
 
 Enviados em pedaços de **16 KB** por um `RTCDataChannel` P2P (até **25 MB**), com controle de fluxo (pausa em 1 MB em buffer, retoma em 256 KB). Nunca passam pelo servidor; só chega a quem está conectado no momento do envio.
+
+### 6.6 Prévia e senha da sala
+
+A tela inicial consulta `GET /preview` (uma vez por pausa de 400 ms na digitação, sem polling) e mostra que a sala existe, quantas pessoas estão nela e se tem senha. A senha é ligada e desligada **de dentro da sala**, pelo **anfitrião**: a pessoa mais antiga na sala (menor `joinedAt`; empate, menor `peerId`; observadores do admin não contam). Se ela sai, o posto passa à seguinte.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant N as Quem chega
+  participant S as Servidor
+  participant H as Anfitrião
+  participant O as Demais na sala
+  N->>S: GET /preview
+  S-->>N: count, closed, protected=true
+  Note over N: a tela pede "Senha da sala"
+  N->>S: POST /join com password
+  alt senha certa
+    S-->>N: 200 com token e protected=true
+  else senha errada
+    S-->>N: 403 wrong_password
+  else 5 erros do mesmo IP em 10 min
+    S-->>N: 429 too_many_attempts e Retry-After
+  end
+  H->>S: POST /password set (token do anfitrião)
+  S->>S: scrypt com sal, grava hash
+  S-->>O: evento room com protected=true
+  Note over O: quem já estava dentro continua e vê o aviso
+```
+
+Regras: a senha só vale para **novas** entradas; nunca vai na URL (a aba a guarda em `sessionStorage` para recarregar sem pedir de novo); o servidor guarda só sal e hash scrypt, comparados com `timingSafeEqual`, e nunca devolve nem registra a senha; o observador do admin entra sem senha; sala encerrada responde `room_closed` antes de pedir senha.
 
 ---
 
@@ -539,9 +572,11 @@ No Atlas, a **Network Access** precisa permitir a Vercel (as funções não têm
 | Sinal para quem não está na sala | Ignorado sem erro; remetente desconhecido dá `410`. |
 | Sinal de uma negociação antiga | `gen` e `sid` descartam. |
 | Sala lotada (só com `MAX_PEERS`) | O participante excedente recebe `409`, e a câmera é solta (luz apagada). |
+| Adivinhar a senha da sala | Limite de **5 erros por (sala, IP) em 10 min** (tranca 5 min) e de **50 por sala** (tranca todo mundo 1 min), com `429` e `Retry-After`. Quem não é anfitrião é recusado antes do scrypt (não gasta CPU). |
+| Senha da sala vazar | Só sal e hash scrypt (N=16384, r=8, p=1); comparação com `timingSafeEqual`; nunca em resposta, evento, prévia, painel do admin ou log. Parâmetros lidos do banco têm teto. |
 | Mídia | Cifrada ponta a ponta pelo próprio WebRTC (DTLS-SRTP); o servidor nunca a vê. |
 
-Limitações conhecidas de segurança: **não há autenticação de sala** (quem souber o nome entra) e **não há limite de quantidade de salas**. O MIME de um arquivo recebido é o declarado por quem enviou.
+Limitações conhecidas de segurança: **a sala só tem senha se o anfitrião a ligar** (sem ela, quem souber o nome entra) e **não há limite de quantidade de salas**. O MIME de um arquivo recebido é o declarado por quem enviou.
 
 ---
 
@@ -563,6 +598,9 @@ Limitações conhecidas de segurança: **não há autenticação de sala** (quem
 | Watchdog de sessão | 20 s | `peer-manager.ts` |
 | Reinício global | fila com concorrência 2 | `negotiation.ts` (`RestartQueue`) |
 | Telas por pessoa | 3 | `screens.ts` (`MAX_SCREENS`) |
+| Senha da sala | 4 a 64 caracteres; registro expira 24 h após o último uso | `room-store.ts` (`PASSWORD_TTL_MS`) |
+| Tentativas de senha | 5 erros/IP em 10 min → 5 min; 50 erros/sala → 1 min | `room-store.ts` (`PASSWORD_*`) |
+| Espera antes da prévia | 400 ms após a última tecla | `use-room-preview.ts` |
 | Tamanho máximo de arquivo | 25 MB, pedaços de 16 KB | `file-transfer.ts` |
 | Corpo de requisição | 128 KB | `http.ts` |
 

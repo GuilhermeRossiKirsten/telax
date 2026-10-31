@@ -11,12 +11,22 @@ import type {
 } from '@/lib/admin-types';
 import type { PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
 import { resolveMediaState } from '@/lib/validation';
+import type { PasswordParams, PasswordRecord } from './room-password';
 import {
   BannedError,
   MAX_EVENTS,
+  PASSWORD_ATTEMPT_WINDOW_MS,
+  PASSWORD_KEY_LIMIT,
+  PASSWORD_KEY_LOCK_MS,
+  PASSWORD_ROOM_LIMIT,
+  PASSWORD_ROOM_LOCK_MS,
+  PASSWORD_TTL_MS,
   PEER_TTL_MS,
   RoomClosedError,
   RoomFullError,
+  type PasswordThrottle,
+  type RoomPreview,
+  type SetPasswordResult,
   TOMBSTONE_MS,
   UnknownPeerError,
   banId,
@@ -24,7 +34,9 @@ import {
   cleanIp,
   cleanMessage,
   cleanReason,
+  cleanThrottleKey,
   isUuid,
+  pickHost,
   type BanEntry,
   type BanResult,
   type RoomStore,
@@ -78,11 +90,28 @@ export type RemovedDoc = {
   at: Date;
 };
 
-export type AdminCollections = { closed: Collection<ClosedDoc>; bans: Collection<BanDoc>; removed: Collection<RemovedDoc> };
+/**
+ * Senha da sala (`_id` = nome da sala): só sal + derivação scrypt, nunca o texto. SEM o TTL de 1 h das salas, porque
+ * precisa sobreviver à sala ficar vazia. `expiresAtMs` (relógio do store) é o que vale na leitura; `expireAt` (Date) só
+ * alimenta o índice TTL que limpa os registros esquecidos.
+ */
+export type PasswordDoc = { _id: string; salt: string; hash: string; params: PasswordParams; expiresAtMs: number; expireAt: Date };
+/** Erros de senha de uma chave (`_id` = sala + IP, ou a sala toda). `lockedUntil` 0 = livre. */
+export type AttemptDoc = { _id: string; count: number; windowStart: number; lockedUntil: number; expireAt: Date };
+
+export type AdminCollections = {
+  closed: Collection<ClosedDoc>;
+  bans: Collection<BanDoc>;
+  removed: Collection<RemovedDoc>;
+  passwords: Collection<PasswordDoc>;
+  attempts: Collection<AttemptDoc>;
+};
 export const adminCollections = (db: Db): AdminCollections => ({
   closed: db.collection<ClosedDoc>('admin_closed'),
   bans: db.collection<BanDoc>('admin_bans'),
   removed: db.collection<RemovedDoc>('admin_removed'),
+  passwords: db.collection<PasswordDoc>('room_passwords'),
+  attempts: db.collection<AttemptDoc>('room_password_attempts'),
 });
 
 export type MongoStoreOptions = RoomStoreOptions & { admin?: AdminCollections };
@@ -227,7 +256,12 @@ export class MongoRoomStore implements RoomStore {
   /** Índices TTL: salas abandonadas (1 h) e tombstones do admin (5 min). Idempotente; chame uma vez ao criar o store. */
   async ensureIndexes() {
     await this.rooms.createIndex({ updatedAt: 1 }, { expireAfterSeconds: ROOM_IDLE_SECONDS });
-    if (this.opts.admin) await this.opts.admin.removed.createIndex({ at: 1 }, { expireAfterSeconds: TOMBSTONE_TTL_SECONDS });
+    if (this.opts.admin) {
+      await this.opts.admin.removed.createIndex({ at: 1 }, { expireAfterSeconds: TOMBSTONE_TTL_SECONDS });
+      // senhas esquecidas (24 h depois do último uso) e contadores de tentativas velhos: `expireAt` já é a hora de sumir
+      await this.opts.admin.passwords.createIndex({ expireAt: 1 }, { expireAfterSeconds: 0 });
+      await this.opts.admin.attempts.createIndex({ expireAt: 1 }, { expireAfterSeconds: 0 });
+    }
   }
 
   async join(room: string, name: string, ctx?: JoinContext) {
@@ -345,6 +379,162 @@ export class MongoRoomStore implements RoomStore {
     return { events: visibleEvents(doc.events, peerId, since, peer.observer === true), cursor: doc.seq };
   }
 
+  /**
+   * Só leitura, um `findOne` com projeção: a CONTAGEM é calculada no banco (`$filter` sobre os peers vivos e não
+   * observadores), então nada de nomes, tokens, ips nem eventos sai do banco. A sala é só um valor de igualdade em `_id`.
+   */
+  async roomPreview(room: string): Promise<RoomPreview> {
+    const limit = this.now() - PEER_TTL_MS;
+    const doc = (await this.rooms.findOne(
+      { _id: room },
+      {
+        projection: {
+          _id: 0,
+          count: {
+            $size: {
+              $filter: {
+                input: { $objectToArray: { $ifNull: ['$peers', {}] } },
+                as: 'p',
+                cond: { $and: [{ $gte: ['$p.v.lastSeen', { $literal: limit }] }, { $ne: ['$p.v.observer', true] }] },
+              },
+            },
+          },
+        },
+      },
+    )) as unknown as { count?: number } | null;
+    const closed = this.opts.admin ? (await this.opts.admin.closed.findOne({ _id: room }, { projection: { _id: 1 } })) !== null : false;
+    // só a existência do registro vivo (projeção de `_id`): o hash nunca sai do banco por aqui
+    const isProtected = this.opts.admin
+      ? (await this.opts.admin.passwords.findOne({ _id: room, expiresAtMs: { $gt: this.now() } }, { projection: { _id: 1 } })) !== null
+      : false;
+    return { count: typeof doc?.count === 'number' ? doc.count : 0, closed, protected: isProtected };
+  }
+
+  // ---- senha da sala ----
+
+  /** Só o registro vivo: o TTL de 24 h é aplicado na leitura (o índice TTL do Mongo só limpa depois, sem hora certa). */
+  async getRoomPassword(room: string): Promise<PasswordRecord | null> {
+    if (!this.opts.admin) return null;
+    const doc = await this.opts.admin.passwords.findOne({ _id: room, expiresAtMs: { $gt: this.now() } });
+    return doc ? { salt: doc.salt, hash: doc.hash, params: doc.params } : null;
+  }
+
+  async setRoomPassword(room: string, peerId: string, record: PasswordRecord | null): Promise<SetPasswordResult> {
+    if (!UUID.test(peerId)) return 'unknown_peer';
+    const t = this.now();
+    const limit = t - PEER_TTL_MS;
+    const alive = await this.aliveForHost(room, limit);
+    if (!alive.some((p) => p.id === peerId)) return 'unknown_peer';
+    if (pickHost(alive) !== peerId) return 'not_host';
+    if (record) {
+      await this.adm.passwords.replaceOne(
+        { _id: room },
+        { salt: record.salt, hash: record.hash, params: record.params, expiresAtMs: t + PASSWORD_TTL_MS, expireAt: new Date(Date.now() + PASSWORD_TTL_MS) },
+        { upsert: true },
+      );
+    } else {
+      await this.adm.passwords.deleteOne({ _id: room });
+    }
+    // avisa quem está na sala (não o admin observador); o filtro garante que o peer ainda está vivo
+    await this.rooms.findOneAndUpdate(
+      { _id: room, [`peers.${peerId}.lastSeen`]: { $gte: limit } } as Filter<RoomDoc>,
+      [
+        { $set: { [`peers.${peerId}.lastSeen`]: t } },
+        ...emitStages('room', peerId, literal({ protected: record !== null }), undefined, t, 'peers'),
+      ],
+      { projection: { _id: 1 } },
+    );
+    return 'ok';
+  }
+
+  async isRoomHost(room: string, peerId: string): Promise<boolean> {
+    if (!UUID.test(peerId)) return false;
+    return pickHost(await this.aliveForHost(room, this.now() - PEER_TTL_MS)) === peerId;
+  }
+
+  /** Quem está vivo na sala, no formato que `pickHost` usa (uma leitura só, com projeção mínima). */
+  private async aliveForHost(room: string, limit: number) {
+    const doc = await this.rooms.findOne({ _id: room }, { projection: { peers: 1 } });
+    return Object.entries(doc?.peers ?? {})
+      .filter(([, p]) => p.lastSeen >= limit)
+      .map(([id, p]) => ({ id, joinedAt: p.joinedAt, observer: p.observer }));
+  }
+
+  async passwordThrottle(room: string, key: string): Promise<PasswordThrottle> {
+    if (!this.opts.admin) return { locked: false, retryAfterMs: 0 };
+    const t = this.now();
+    const docs = await this.opts.admin.attempts.find({ _id: { $in: [this.keyAttemptId(room, key), this.roomAttemptId(room)] } }).toArray();
+    const retry = Math.max(0, ...docs.map((d) => d.lockedUntil - t));
+    return { locked: retry > 0, retryAfterMs: retry };
+  }
+
+  async passwordFailed(room: string, key: string): Promise<PasswordThrottle> {
+    const t = this.now();
+    const results = await Promise.all([
+      this.bumpAttempts(this.keyAttemptId(room, key), PASSWORD_KEY_LIMIT, PASSWORD_KEY_LOCK_MS, t),
+      this.bumpAttempts(this.roomAttemptId(room), PASSWORD_ROOM_LIMIT, PASSWORD_ROOM_LOCK_MS, t),
+    ]);
+    const retry = Math.max(...results);
+    return { locked: retry > 0, retryAfterMs: retry };
+  }
+
+  async passwordSucceeded(room: string, key: string): Promise<void> {
+    const t = this.now();
+    await this.adm.attempts.deleteOne({ _id: this.keyAttemptId(room, key) });
+    await this.adm.passwords.updateOne(
+      { _id: room, expiresAtMs: { $gt: t } },
+      { $set: { expiresAtMs: t + PASSWORD_TTL_MS, expireAt: new Date(Date.now() + PASSWORD_TTL_MS) } },
+    );
+  }
+
+  // O tamanho do nome da sala vai na frente: nenhuma sala/chave consegue forjar o id de outra.
+  private keyAttemptId = (room: string, key: string) => `${room.length}:${room}|k:${cleanThrottleKey(key)}`;
+  private roomAttemptId = (room: string) => `${room.length}:${room}|r`;
+
+  /**
+   * Conta um erro num único update atômico (vale entre instâncias). Janela vencida ou trava já cumprida recomeçam do
+   * zero; ao chegar em `limit` erros, tranca por `lockMs`. Devolve quanto falta para destrancar (0 = livre).
+   */
+  private async bumpAttempts(id: string, limit: number, lockMs: number, t: number): Promise<number> {
+    const lockedUntil = { $ifNull: ['$lockedUntil', 0] };
+    const pipeline: Document[] = [
+      {
+        $set: {
+          stale: {
+            $or: [
+              { $eq: [{ $type: '$windowStart' }, 'missing'] },
+              { $lte: [{ $add: ['$windowStart', PASSWORD_ATTEMPT_WINDOW_MS] }, t] },
+              { $and: [{ $gt: [lockedUntil, 0] }, { $lte: [lockedUntil, t] }] },
+            ],
+          },
+        },
+      },
+      {
+        $set: {
+          count: { $add: [{ $cond: ['$stale', 0, { $ifNull: ['$count', 0] }] }, 1] },
+          windowStart: { $cond: ['$stale', t, '$windowStart'] },
+          lockedUntil: { $cond: ['$stale', 0, lockedUntil] },
+        },
+      },
+      {
+        $set: {
+          lockedUntil: { $cond: [{ $and: [{ $gte: ['$count', limit] }, { $lte: ['$lockedUntil', t] }] }, t + lockMs, '$lockedUntil'] },
+          expireAt: new Date(Date.now() + PASSWORD_ATTEMPT_WINDOW_MS + lockMs),
+        },
+      },
+      { $unset: 'stale' },
+    ];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const doc = await this.adm.attempts.findOneAndUpdate({ _id: id }, pipeline, { upsert: true, returnDocument: 'after' });
+        return doc && doc.lockedUntil > t ? doc.lockedUntil - t : 0;
+      } catch (e) {
+        // dois primeiros erros do mesmo id ao mesmo tempo: um perde a corrida do upsert e só tenta de novo
+        if (!isDuplicateKey(e) || attempt >= 3) throw e;
+      }
+    }
+  }
+
   async signal(room: string, from: string, to: string, data: SignalData) {
     if (!UUID.test(from)) throw new UnknownPeerError();
     const t = this.now();
@@ -439,20 +629,27 @@ export class MongoRoomStore implements RoomStore {
     const limit = this.now() - PEER_TTL_MS;
     const docs = await this.rooms.find({}, { projection: { peers: 1, createdAt: 1, updatedAt: 1 } }).toArray();
     const closedDocs = new Map((await this.adm.closed.find({}).toArray()).map((c) => [c._id, c]));
+    const protectedRooms = new Set(
+      (await this.adm.passwords.find({ expiresAtMs: { $gt: this.now() } }, { projection: { _id: 1 } }).toArray()).map((p) => p._id),
+    );
     const out: AdminRoomSummary[] = [];
     for (const doc of docs) {
-      const summary = this.summarize(doc._id, doc, closedDocs.get(doc._id), limit);
+      const summary = this.summarize(doc._id, doc, closedDocs.get(doc._id), limit, protectedRooms.has(doc._id));
       // sala com todo mundo expirado e ainda não varrida: fantasma, não aparece
       if (summary.peerCount + summary.observerCount > 0 || summary.closed) out.push(summary);
       closedDocs.delete(doc._id);
     }
-    for (const closed of closedDocs.values()) out.push(this.summarize(closed._id, undefined, closed, limit));
+    for (const closed of closedDocs.values()) out.push(this.summarize(closed._id, undefined, closed, limit, protectedRooms.has(closed._id)));
     return out.sort((a, b) => b.lastActivity - a.lastActivity || a.name.localeCompare(b.name));
   }
 
   async getRoom(room: string): Promise<AdminRoomDetail | null> {
     const limit = this.now() - PEER_TTL_MS;
-    const [doc, closed] = await Promise.all([this.rooms.findOne({ _id: room }), this.adm.closed.findOne({ _id: room })]);
+    const [doc, closed, password] = await Promise.all([
+      this.rooms.findOne({ _id: room }),
+      this.adm.closed.findOne({ _id: room }),
+      this.getRoomPassword(room),
+    ]);
     if (!doc && !closed) return null;
     const peers: AdminPeer[] = Object.entries(doc?.peers ?? {})
       .filter(([, p]) => p.lastSeen >= limit)
@@ -469,7 +666,7 @@ export class MongoRoomStore implements RoomStore {
         ip: p.ip ?? null,
         deviceId: p.deviceId ?? null,
       }));
-    return { ...this.summarize(room, doc ?? undefined, closed ?? undefined, limit), peers };
+    return { ...this.summarize(room, doc ?? undefined, closed ?? undefined, limit, password !== null), peers };
   }
 
   async kick(room: string, peerId: string, reason?: string) {
@@ -588,7 +785,7 @@ export class MongoRoomStore implements RoomStore {
     return peer && peer.lastSeen >= this.now() - PEER_TTL_MS ? peer : undefined;
   }
 
-  private summarize(name: string, doc: Pick<RoomDoc, 'peers' | 'createdAt' | 'updatedAt'> | undefined, closed: ClosedDoc | undefined, limit: number): AdminRoomSummary {
+  private summarize(name: string, doc: Pick<RoomDoc, 'peers' | 'createdAt' | 'updatedAt'> | undefined, closed: ClosedDoc | undefined, limit: number, passwordProtected: boolean): AdminRoomSummary {
     const alive = Object.values(doc?.peers ?? {}).filter((p) => p.lastSeen >= limit);
     const observerCount = alive.filter((p) => p.observer).length;
     const created = doc?.createdAt ?? doc?.updatedAt?.getTime() ?? closed?.at ?? 0;
@@ -600,6 +797,7 @@ export class MongoRoomStore implements RoomStore {
       lastActivity: Math.max(doc?.updatedAt?.getTime() ?? 0, closed?.at ?? 0, created),
       closed: !!closed,
       ...(closed?.reason ? { closedReason: closed.reason } : {}),
+      passwordProtected,
     };
   }
 

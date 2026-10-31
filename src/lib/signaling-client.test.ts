@@ -590,3 +590,214 @@ describe('removido pelo admin (410 com motivo)', () => {
     t.client.stop();
   });
 });
+
+const memStore = (initial: Record<string, string> = {}) => {
+  const m = new Map(Object.entries(initial));
+  return {
+    getItem: (k: string) => m.get(k) ?? null,
+    setItem: (k: string, v: string) => void m.set(k, v),
+    removeItem: (k: string) => void m.delete(k),
+    dump: () => Object.fromEntries(m),
+  };
+};
+const joinBodyOf = (t: { calls: Array<{ route: string; init: RequestInit }> }, n = 0) =>
+  JSON.parse(String(t.calls.filter((c) => c.route === 'join')[n].init.body));
+const PW_KEY = 'telax:room-pw:sala';
+
+describe('senha da sala no join', () => {
+  it('envia a senha informada nas opções e a guarda na aba depois de entrar', async () => {
+    const store = memStore();
+    const t = setupWith({ password: 'segredo', passwordStorage: store }, {
+      join: () => ok({ ...joinBody('p1'), protected: true }),
+      events: () => ok({ events: [], cursor: 5 }),
+    });
+    await t.client.start();
+    expect(joinBodyOf(t)).toEqual({ name: 'Ana', password: 'segredo' });
+    expect(store.dump()).toEqual({ [PW_KEY]: 'segredo' });
+    expect(t.joined[0][0].protected).toBe(true);
+    t.client.stop();
+  });
+
+  it('sem opção, usa a senha guardada na aba (recarregar a página não pede de novo)', async () => {
+    const store = memStore({ [PW_KEY]: 'guardada' });
+    const t = setupWith({ passwordStorage: store }, { join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    expect(joinBodyOf(t)).toEqual({ name: 'Ana', password: 'guardada' });
+    t.client.stop();
+  });
+
+  it('sem senha em lugar nenhum o corpo não leva o campo; protected ausente vira false', async () => {
+    const t = setupWith({ passwordStorage: memStore() }, { join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    expect(joinBodyOf(t)).toEqual({ name: 'Ana' });
+    expect(t.joined[0][0].protected).toBe(false);
+    t.client.stop();
+  });
+
+  it('observador (admin) não manda senha nenhuma', async () => {
+    const t = setupWith({ observer: true, password: 'x1234', passwordStorage: memStore({ [PW_KEY]: 'y1234' }) }, {
+      join: () => ok(joinBody('p1')),
+      events: () => ok({ events: [], cursor: 5 }),
+    });
+    await t.client.start();
+    expect(joinBodyOf(t)).toEqual({ name: 'Ana', observer: true });
+    t.client.stop();
+  });
+
+  it('reentrada após 410 comum reaproveita a senha', async () => {
+    const t = setupWith({ password: 'segredo', passwordStorage: memStore() }, {
+      join: (call) => ok(joinBody(call === 1 ? 'p1' : 'p2')),
+      events: (call) => (call === 1 ? ok({}, 410) : ok({ events: [], cursor: 5 })),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(2);
+    expect(joinBodyOf(t, 1)).toEqual({ name: 'Ana', password: 'segredo' });
+    t.client.stop();
+  });
+});
+
+describe('entrada recusada por senha (locked)', () => {
+  it('403 password_required → locked, sem polling, sem laço de novas tentativas, e NÃO é erro', async () => {
+    const t = setupWith({ passwordStorage: memStore() }, {
+      join: () => ok({ error: 'password_required' }, 403),
+      events: () => ok({ events: [], cursor: 0 }),
+    });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.statuses).toEqual(['connecting', 'locked']);
+    expect(t.ended).toEqual([{ kind: 'locked', reason: 'password_required' }]);
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+    expect(t.calls.filter((c) => c.route === 'events')).toHaveLength(0);
+  });
+
+  it('403 wrong_password → locked e apaga a senha guardada (estava errada)', async () => {
+    const store = memStore({ [PW_KEY]: 'velha' });
+    const t = setupWith({ passwordStorage: store }, { join: () => ok({ error: 'wrong_password' }, 403), events: () => ok({ events: [], cursor: 0 }) });
+    await t.client.start();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(t.ended).toEqual([{ kind: 'locked', reason: 'wrong_password' }]);
+    expect(store.dump()).toEqual({});
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+  });
+
+  it('429 → locked com retryAfter (corpo, ou cabeçalho Retry-After)', async () => {
+    const t = setupWith({ passwordStorage: memStore() }, {
+      join: () => ok({ error: 'too_many_attempts', retryAfter: 90 }, 429),
+      events: () => ok({ events: [], cursor: 0 }),
+    });
+    await t.client.start();
+    expect(t.ended).toEqual([{ kind: 'locked', reason: 'too_many_attempts', retryAfter: 90 }]);
+    expect(t.statuses.at(-1)).toBe('locked');
+
+    const h = setupWith({ passwordStorage: memStore() }, {
+      join: () => new Response(JSON.stringify({ error: 'too_many_attempts' }), { status: 429, headers: { 'Retry-After': '12' } }),
+      events: () => ok({ events: [], cursor: 0 }),
+    });
+    await h.client.start();
+    expect(h.ended).toEqual([{ kind: 'locked', reason: 'too_many_attempts', retryAfter: 12 }]);
+  });
+
+  it('retryJoin(senha) tenta de novo com a senha nova, guarda e fica online', async () => {
+    const store = memStore();
+    const t = setupWith({ passwordStorage: store }, {
+      join: (call) => (call === 1 ? ok({ error: 'password_required' }, 403) : ok({ ...joinBody('p1'), protected: true })),
+      events: () => ok({ events: [], cursor: 5 }),
+    });
+    await t.client.start();
+    await t.client.retryJoin('certa123');
+    expect(joinBodyOf(t, 1)).toEqual({ name: 'Ana', password: 'certa123' });
+    expect(t.statuses).toEqual(['connecting', 'locked', 'connecting', 'online']);
+    expect(t.joined).toHaveLength(1);
+    expect(t.joined[0][1]).toBe(false);
+    expect(store.dump()).toEqual({ [PW_KEY]: 'certa123' });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.calls.filter((c) => c.route === 'events').length).toBeGreaterThan(0);
+    t.client.stop();
+  });
+
+  it('retryJoin com senha errada volta a locked e continua sem polling', async () => {
+    const t = setupWith({ passwordStorage: memStore() }, {
+      join: () => ok({ error: 'wrong_password' }, 403),
+      events: () => ok({ events: [], cursor: 0 }),
+    });
+    await t.client.start();
+    await t.client.retryJoin('errada1');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(t.statuses).toEqual(['connecting', 'locked', 'connecting', 'locked']);
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(2);
+    expect(t.calls.filter((c) => c.route === 'events')).toHaveLength(0);
+  });
+
+  it('retryJoin fora do estado locked não faz nada', async () => {
+    const t = setupWith({ passwordStorage: memStore() }, { join: () => ok(joinBody('p1')), events: () => ok({ events: [], cursor: 5 }) });
+    await t.client.start();
+    await t.client.retryJoin('qualquer');
+    expect(t.calls.filter((c) => c.route === 'join')).toHaveLength(1);
+    t.client.stop();
+  });
+});
+
+describe('definir/remover a senha (roomPassword)', () => {
+  const joined = (extra: Record<string, Handler> = {}) =>
+    setupWith({ passwordStorage: memStore() }, {
+      join: () => ok(joinBody('p1', 5, 'tok1')),
+      events: () => ok({ events: [], cursor: 5 }),
+      ...extra,
+    });
+  const bodyOf = (t: { calls: Array<{ route: string; init: RequestInit }> }) =>
+    JSON.parse(String(t.calls.find((c) => c.route === 'password')!.init.body));
+
+  it('set: POST /password com peerId, token, action e senha; devolve protected', async () => {
+    const t = joined({ password: () => ok({ protected: true }) });
+    await t.client.start();
+    expect(await t.client.roomPassword('set', 'nova1234')).toEqual({ ok: true, protected: true });
+    expect(bodyOf(t)).toEqual({ peerId: 'p1', token: 'tok1', action: 'set', password: 'nova1234' });
+    t.client.stop();
+  });
+
+  it('clear: não manda senha', async () => {
+    const t = joined({ password: () => ok({ protected: false }) });
+    await t.client.start();
+    expect(await t.client.roomPassword('clear', 'ignorada')).toEqual({ ok: true, protected: false });
+    expect(bodyOf(t)).toEqual({ peerId: 'p1', token: 'tok1', action: 'clear' });
+    t.client.stop();
+  });
+
+  it('403 not_host e 400 invalid viram erros tipados', async () => {
+    const a = joined({ password: () => ok({ error: 'not_host' }, 403) });
+    await a.client.start();
+    expect(await a.client.roomPassword('set', 'abcd')).toEqual({ ok: false, error: 'not_host' });
+    const b = joined({ password: () => ok({ error: 'invalid' }, 400) });
+    await b.client.start();
+    expect(await b.client.roomPassword('set', 'ab')).toEqual({ ok: false, error: 'invalid' });
+    a.client.stop();
+    b.client.stop();
+  });
+
+  it('falha de rede e chamada antes de entrar viram error: network', async () => {
+    const a = joined({
+      password: () => {
+        throw new Error('offline');
+      },
+    });
+    await a.client.start();
+    expect(await a.client.roomPassword('set', 'abcd')).toEqual({ ok: false, error: 'network' });
+    a.client.stop();
+    const b = setupWith({ passwordStorage: memStore() }, {
+      join: () => ok({ error: 'password_required' }, 403),
+      password: () => ok({ protected: true }),
+    });
+    await b.client.start();
+    expect(await b.client.roomPassword('set', 'abcd')).toEqual({ ok: false, error: 'network' });
+    expect(b.calls.filter((c) => c.route === 'password')).toHaveLength(0);
+  });
+
+  it('410 com motivo (removido pelo admin) encerra como removed', async () => {
+    const t = joined({ password: () => ok({ reason: 'kicked' }, 410) });
+    await t.client.start();
+    expect(await t.client.roomPassword('set', 'abcd')).toEqual({ ok: false, error: 'network' });
+    expect(t.ended).toEqual([{ kind: 'removed', reason: 'kicked' }]);
+    expect(t.statuses.at(-1)).toBe('removed');
+  });
+});

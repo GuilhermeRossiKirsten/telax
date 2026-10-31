@@ -18,7 +18,10 @@ export type PeerInfo = {
  */
 export type PeerMediaState = Pick<PeerInfo, 'audio' | 'video' | 'sharing'> & { screenSlots?: number };
 
-export type RoomEventType = 'join' | 'leave' | 'state' | 'chat' | 'signal' | 'restart' | 'admin';
+export type RoomEventType = 'join' | 'leave' | 'state' | 'chat' | 'signal' | 'restart' | 'admin' | 'room';
+
+/** Payload do evento `room`: a senha da sala foi ligada/alterada (`protected: true`) ou removida (`false`). */
+export type RoomEventPayload = { protected: boolean };
 
 export type RoomEvent = {
   seq: number;

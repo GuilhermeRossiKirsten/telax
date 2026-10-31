@@ -15,6 +15,7 @@ import { useViewState } from '@/hooks/use-view-state';
 import { toSendQuality } from '@/lib/quality';
 import { AdminEndedScreen, AdminMessageBanner, MonitorNotice } from './AdminNotice';
 import { ControlBar } from './ControlBar';
+import { RoomPasswordNotice, RoomPasswordPrompt } from './RoomPasswordPrompt';
 import { Icon } from './Icon';
 import { SettingsDialog } from './SettingsDialog';
 import { SidePanel, type Tab } from './SidePanel';
@@ -127,6 +128,18 @@ export function RoomView({ room, name }: { room: string; name: string }) {
   }
 
   const backHref = `https://rossik.dev.br/telax?room=${encodeURIComponent(room)}`;
+  // sala com senha: o prompt fica na tela também durante a nova tentativa (`connecting`), sem piscar nem perder o campo
+  if (r.locked && (r.status === 'locked' || r.status === 'connecting')) {
+    return (
+      <RoomPasswordPrompt
+        room={room}
+        lock={r.locked}
+        busy={r.status === 'connecting'}
+        onSubmit={r.retryWithPassword}
+        backHref={backHref}
+      />
+    );
+  }
   if (r.status === 'removed' && r.removed) {
     return <AdminEndedScreen info={{ kind: 'removed', reason: r.removed.reason, detail: r.removed.detail }} backHref={backHref} />;
   }
@@ -185,6 +198,7 @@ export function RoomView({ room, name }: { room: string; name: string }) {
       )}
       {r.adminMessage && <AdminMessageBanner text={r.adminMessage.text} onDismiss={r.dismissAdminMessage} />}
       {r.observerPresent && <MonitorNotice />}
+      {r.roomNotice && <RoomPasswordNotice notice={r.roomNotice} onDismiss={r.dismissRoomNotice} />}
       {r.error && (
         <div className="banner warn" role="alert">
           {r.error} <button className="ghost" onClick={r.dismissError}>Fechar</button>
@@ -261,6 +275,12 @@ export function RoomView({ room, name }: { room: string; name: string }) {
         inUse={local.inUse}
         participants={r.participants.length}
         sharing={local.sharing}
+        roomPassword={{
+          isHost: r.isHost,
+          protected: r.roomProtected,
+          onSet: (password) => r.setRoomPassword('set', password),
+          onClear: () => r.setRoomPassword('clear'),
+        }}
       />
     </div>
   );

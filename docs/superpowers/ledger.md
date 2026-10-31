@@ -151,3 +151,16 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - Verificação: tsc limpo; vitest 571 passed / 5 skipped (com Mongo real o fork S1 rodou 642/642); e2e 96/96; mesh 5/5; audit 0.
 - Não verificado: o fluxo OAuth com o GitHub de verdade (só unitário com `fetch` falso), consumo de recursos do observador, MongoDB Atlas real, deploy na Vercel.
 - Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.
+
+## Prévia da sala e senha da sala
+
+- Pedido: na tela inicial, mostrar que a sala já existe e quantas pessoas há nela; senha da sala que se liga e desliga dentro da sala.
+- Contrato escrito antes: `docs/superpowers/specs/2026-10-31-senha-da-sala-design.md`. 2 forks paralelos com arquivos próprios: PW-S (servidor, Memory + Mongo, rotas) e PW-C (cliente, tela de senha, Configurações → Sala). Prévia: fork P (servidor) + eu (cliente).
+- Ruling: o **anfitrião** é a pessoa viva mais antiga (menor `joinedAt`, empate pelo menor `peerId`, sem observadores); o usuário não definiu quem controla a senha. Custo se errado: trocar `pickHost`.
+- Ruling: a senha vale só para **novas** entradas; quem já está dentro continua (aviso na tela). Reentrar após 410 reusa a senha guardada em `sessionStorage` da aba.
+- Ruling: o registro da senha sobrevive à sala vazia (24 h após o último uso), senão recarregar a página do último abriria a sala.
+- Ruling: scrypt + `timingSafeEqual`; limite de 5 erros/IP em 10 min (tranca 5 min) e 50/sala (1 min). Números escolhidos por mim.
+- Verificação (executada): tsc limpo; vitest 699 passed / 5 skipped; e2e 116/116 (20 novos: 7 prévia, 13 senha incl. selo do admin); mesh 5/5; audit 0. Mutação (desligar `verifyPassword` na rota de join) derrubou 4 testes e2e; rota restaurada.
+- Mermaid: 19 diagramas renderizados com mermaid 11.4 (novo 6.6).
+- NÃO verificado: lado **MongoDB real** da prévia e da senha (Docker desligado; `bumpAttempts` com pipeline+upsert e os índices TTL novos só passam no tsc e no contrato em memória). Rodar: `docker run -d --rm --name telax-test-mongo-x -p 27019:27017 mongo:7` e `MONGODB_TEST_URI=mongodb://127.0.0.1:27019 npx vitest run src/server`.
+- Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.

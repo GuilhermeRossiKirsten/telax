@@ -10,20 +10,32 @@ import type {
   RemovalReason,
 } from '@/lib/admin-types';
 import type { ChatPayload, PeerInfo, PeerMediaState, RoomEvent, RoomEventType, SignalData } from '@/lib/types';
+import type { PasswordRecord } from './room-password';
 import {
   BannedError,
   MAX_EVENTS,
+  PASSWORD_ATTEMPT_WINDOW_MS,
+  PASSWORD_KEY_LIMIT,
+  PASSWORD_KEY_LOCK_MS,
+  PASSWORD_ROOM_LIMIT,
+  PASSWORD_ROOM_LOCK_MS,
+  PASSWORD_TTL_MS,
   PEER_TTL_MS,
   RoomClosedError,
   RoomFullError,
+  type PasswordThrottle,
+  type RoomPreview,
+  type SetPasswordResult,
   TOMBSTONE_MS,
   UnknownPeerError,
   banId,
+  cleanThrottleKey,
   cleanCommand,
   cleanIp,
   cleanMessage,
   cleanReason,
   isUuid,
+  pickHost,
   type BanEntry,
   type BanResult,
   type RoomStore,
@@ -48,6 +60,11 @@ type Room = {
 
 type Tombstone = { reason: RemovalReason; detail?: string; token: string; at: number };
 
+/** Senha da sala: sobrevive à sala ficar vazia; `expiresAt` anda 24 h a cada uso. */
+type StoredPassword = { record: PasswordRecord; expiresAt: number };
+/** Erros de senha numa janela; `lockedUntil` 0 = livre. */
+type Attempts = { count: number; windowStart: number; lockedUntil: number };
+
 function toInfo({ lastSeen: _lastSeen, token: _token, ip: _ip, deviceId: _deviceId, ...info }: Peer): PeerInfo {
   return info;
 }
@@ -63,6 +80,8 @@ export class MemoryRoomStore implements RoomStore {
   private closed = new Map<string, { reason?: string; at: number }>();
   private bans = new Map<string, Ban>();
   private tombstones = new Map<string, Tombstone>();
+  private passwords = new Map<string, StoredPassword>();
+  private attempts = new Map<string, Attempts>();
 
   constructor(
     private now: () => number = Date.now,
@@ -131,6 +150,88 @@ export class MemoryRoomStore implements RoomStore {
     // só leitura: nada de sweep (que escreveria) nem de lastSeen; o TTL é conferido na hora
     if (!r || !peer || peer.lastSeen < this.now() - PEER_TTL_MS) throw this.gone(room, peerId);
     return this.read(r, peerId, since);
+  }
+
+  /** Só leitura: nada de sweep (que escreveria) nem de lastSeen; o TTL é conferido na hora. */
+  roomPreview(room: string): RoomPreview {
+    const limit = this.now() - PEER_TTL_MS;
+    let count = 0;
+    for (const p of this.rooms.get(room)?.peers.values() ?? []) if (!p.observer && p.lastSeen >= limit) count += 1;
+    return { count, closed: this.closed.has(room), protected: this.getRoomPassword(room) !== null };
+  }
+
+  // ---- senha da sala ----
+
+  /** Só o registro vivo: o TTL de 24 h é aplicado aqui, na leitura. */
+  getRoomPassword(room: string): PasswordRecord | null {
+    const stored = this.passwords.get(room);
+    if (!stored) return null;
+    if (stored.expiresAt <= this.now()) {
+      this.passwords.delete(room);
+      return null;
+    }
+    return stored.record;
+  }
+
+  setRoomPassword(room: string, peerId: string, record: PasswordRecord | null): SetPasswordResult {
+    this.sweep();
+    const r = this.rooms.get(room);
+    const peer = r?.peers.get(peerId);
+    if (!r || !peer) return 'unknown_peer';
+    if (pickHost(r.peers.values()) !== peerId) return 'not_host';
+    peer.lastSeen = this.now();
+    if (record) this.passwords.set(room, { record, expiresAt: this.now() + PASSWORD_TTL_MS });
+    else this.passwords.delete(room);
+    this.emit(r, 'room', peerId, { protected: record !== null }, undefined, 'peers');
+    return 'ok';
+  }
+
+  isRoomHost(room: string, peerId: string): boolean {
+    this.sweep();
+    const r = this.rooms.get(room);
+    return !!r && pickHost(r.peers.values()) === peerId;
+  }
+
+  passwordThrottle(room: string, key: string): PasswordThrottle {
+    const t = this.now();
+    const retry = Math.max(this.retryAfter(this.keyAttemptId(room, key), t), this.retryAfter(this.roomAttemptId(room), t));
+    return { locked: retry > 0, retryAfterMs: retry };
+  }
+
+  passwordFailed(room: string, key: string): PasswordThrottle {
+    const t = this.now();
+    this.bump(this.keyAttemptId(room, key), PASSWORD_KEY_LIMIT, PASSWORD_KEY_LOCK_MS, t);
+    this.bump(this.roomAttemptId(room), PASSWORD_ROOM_LIMIT, PASSWORD_ROOM_LOCK_MS, t);
+    return this.passwordThrottle(room, key);
+  }
+
+  passwordSucceeded(room: string, key: string): void {
+    this.attempts.delete(this.keyAttemptId(room, key));
+    const stored = this.passwords.get(room);
+    if (stored && stored.expiresAt > this.now()) stored.expiresAt = this.now() + PASSWORD_TTL_MS;
+  }
+
+  // O tamanho do nome da sala vai na frente: nenhuma sala/chave consegue forjar o id de outra.
+  private keyAttemptId = (room: string, key: string) => `${room.length}:${room}|k:${cleanThrottleKey(key)}`;
+  private roomAttemptId = (room: string) => `${room.length}:${room}|r`;
+
+  private retryAfter(id: string, t: number): number {
+    const a = this.attempts.get(id);
+    return a && a.lockedUntil > t ? a.lockedUntil - t : 0;
+  }
+
+  /** Conta um erro. Janela vencida ou trava já cumprida recomeçam do zero; ao chegar no limite, tranca. */
+  private bump(id: string, limit: number, lockMs: number, t: number) {
+    let a = this.attempts.get(id);
+    if (!a || t - a.windowStart >= PASSWORD_ATTEMPT_WINDOW_MS || (a.lockedUntil > 0 && a.lockedUntil <= t)) {
+      a = { count: 0, windowStart: t, lockedUntil: 0 };
+    }
+    a.count += 1;
+    if (a.count >= limit && a.lockedUntil <= t) a.lockedUntil = t + lockMs;
+    this.attempts.set(id, a);
+    if (this.attempts.size > 1000) {
+      for (const [k, v] of this.attempts) if (t - v.windowStart >= PASSWORD_ATTEMPT_WINDOW_MS && v.lockedUntil <= t) this.attempts.delete(k);
+    }
   }
 
   private read(r: Room, peerId: string, since: number) {
@@ -341,6 +442,7 @@ export class MemoryRoomStore implements RoomStore {
       lastActivity: Math.max(r?.lastActivity ?? 0, base),
       closed: !!closed,
       ...(closed?.reason ? { closedReason: closed.reason } : {}),
+      passwordProtected: this.getRoomPassword(name) !== null,
     };
   }
 
