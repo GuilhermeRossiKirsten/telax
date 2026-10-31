@@ -494,6 +494,7 @@ Limites por sender são reaplicados depois de cada `replaceTrack`, ao adotar tra
 - Até **3 telas** por pessoa. O botão **Tela** adiciona uma; **Parar compartilhamento** pergunta qual parar (miniatura ao vivo de cada uma), ou para todas.
 - `getDisplayMedia({ video, audio, systemAudio })`: por padrão `systemAudio: 'exclude'` (o áudio do sistema inclui as vozes da chamada, o que causaria eco). Há uma opção para incluí-lo ao compartilhar a tela inteira.
 - Se o navegador rejeitar a opção de áudio (`TypeError`/`NotSupportedError`), a captura é refeita só com vídeo.
+- **Picture-in-Picture:** o tile que mostra uma tela (a minha ou a de outra pessoa) ganha um botão que leva o `<video>` a uma janela flutuante (`src/lib/pip.ts`, `requestPictureInPicture`). É só do navegador de quem clica: não passa pelo servidor nem muda nada para os outros. O botão só aparece onde `document.pictureInPictureEnabled` é verdadeiro (Firefox desktop não o oferece). O navegador mantém **uma** janela por vez, então abrir outra tela troca a anterior. A janela fecha junto quando a tela deixa de ser mostrada (fechei a tela, ou a pessoa parou de compartilhar). Se o clique vem antes de o vídeo ter metadados, espera até 2 s em vez de falhar em silêncio.
 
 ---
 

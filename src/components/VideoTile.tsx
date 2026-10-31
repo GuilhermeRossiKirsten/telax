@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import type { ConnState } from '@/lib/peer-manager';
+import { isInPip, pipSupported, togglePip } from '@/lib/pip';
 import { screenLabel, screenWord } from '@/lib/screens';
 import type { TileKind } from '@/lib/view-state';
 import { Icon } from './Icon';
@@ -101,9 +102,32 @@ export function VideoTile({
     video.srcObject = main;
     if (main) video.play().catch(() => {}); // mudo: o autoplay é sempre permitido
     return () => {
+      // a janela flutuante é da tela: se a fonte muda ou some, ela fecha junto
+      if (isInPip(document, video)) void document.exitPictureInPicture().catch(() => {});
       video.srcObject = null;
     };
   }, [main]);
+
+  // Picture-in-Picture: o botão só existe onde o navegador oferece (decidido no cliente) e acompanha a janela, que também
+  // pode ser fechada por ela mesma ("voltar para a aba")
+  const [pipOk, setPipOk] = useState(false);
+  const [inPip, setInPip] = useState(false);
+  useEffect(() => {
+    const video = mainRef.current;
+    if (!video) return;
+    setPipOk(pipSupported(document, video));
+    const sync = () => setInPip(isInPip(document, video));
+    video.addEventListener('enterpictureinpicture', sync);
+    video.addEventListener('leavepictureinpicture', sync);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', sync);
+      video.removeEventListener('leavepictureinpicture', sync);
+    };
+  }, []);
+  const togglePictureInPicture = () => {
+    const video = mainRef.current;
+    if (video) void togglePip(document, video);
+  };
 
   useEffect(() => {
     const video = insetRef.current;
@@ -196,6 +220,17 @@ export function VideoTile({
         >
           <Icon name={fullscreen ? 'minimize' : 'maximize'} size={16} />
         </button>
+        {showScreen && hasMain && pipOk && (
+          <button
+            className="tile-btn"
+            aria-label={`Picture-in-Picture de ${caption}`}
+            aria-pressed={inPip}
+            title={inPip ? 'Voltar a tela para esta página' : 'Picture-in-Picture: deixar a tela numa janela flutuante'}
+            onClick={stop(togglePictureInPicture)}
+          >
+            <Icon name="pip" size={16} />
+          </button>
+        )}
         {isSelf && showScreen && (
           <button className="tile-btn" aria-label={`Parar de compartilhar ${word}`} title="Parar de compartilhar esta tela" onClick={stop(onStopShare)}>
             <Icon name="screenOff" size={16} />

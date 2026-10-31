@@ -165,3 +165,12 @@ Final: observação — apareceu um .git com 1 commit ("first commit", 16:06) qu
 - NÃO verificado: lado **MongoDB real** da prévia e da senha (Docker desligado; `bumpAttempts` com pipeline+upsert e os índices TTL novos só passam no tsc e no contrato em memória). Rodar: `docker run -d --rm --name telax-test-mongo-x -p 27019:27017 mongo:7` e `MONGODB_TEST_URI=mongodb://127.0.0.1:27019 npx vitest run src/server`.
 - Pendentes sem pedido direto do usuário: prévia de arquivos no chat; commit e push.
 - Bug achado pelo usuário depois da entrega: a prévia só avisava que a sala existia quando ela tinha senha. Causa: no Mongo, `roomPreview` usava `'$p.v.lastSeen'` dentro de `$filter ... as: 'p'` (certo é `$$p`), então a contagem dava sempre 0 e sala sem senha caía em "nada a mostrar". Passou despercebido porque o contrato Mongo não rodou (Docker desligado) e o e2e usa a memória. Corrigido com teste (`mongo-room-preview.test.ts`, visto falhar antes). Ainda NÃO confirmado contra Mongo real.
+
+## Picture-in-Picture da tela compartilhada
+
+- Pedido: "um botão na tela compartilhada onde podemos deixar picture-in-picture".
+- Lógica pura em `src/lib/pip.ts` (11+3 testes, vistos falhar antes); botão no `VideoTile` só quando há tela no ar e o navegador oferece PiP; fecha junto quando a tela deixa de ser mostrada.
+- Ruling: o botão vale também para a PRÓPRIA tela (quem apresenta pode deixá-la flutuando); o usuário não distinguiu.
+- Falha achada ao rodar o arquivo inteiro (intermitente, 1 em ~9): clique logo após "Ver tela" chegava antes de o vídeo ter metadados e o navegador recusava em silêncio. Causa real de produto, não só do teste: agora espera até 2 s pelos metadados (teste unitário visto falhar antes). Os testes também liam o estado cedo demais; passaram a esperar.
+- Verificação: tsc limpo; vitest 714 passed / 5 skipped; e2e 125/125 (9 novos, arquivo repetido 4x = 36/36); mesh 5/5; audit 0. Mutação (remover a saída do PiP ao trocar a fonte) derrubou 2 testes; restaurado.
+- NÃO verificado: PiP **real**. O Chromium sem interface não oferece a API, então o e2e simula `requestPictureInPicture`, `pictureInPictureElement` e os eventos. Falta abrir num Chrome/Edge de verdade e ver a janela flutuante (e o comportamento com o áudio da aba, que continua tocando pela página).
